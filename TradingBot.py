@@ -201,22 +201,22 @@ class TradingBot:
         epic: str,
         direction: str,
         size: int,
-        guaranteedStop: bool,
-        stopLevel: int,
-        profitLevel: int,
-        trailingStop: bool,
-        stopDistance: int,
-        stopAmount: int,
-        profitDistance: int,
-        profitAmount: int,
-    ) -> dict | None:
+        guaranteedStop: bool = False,
+        stopLevel: int = 0,
+        profitLevel: int = 0,
+        trailingStop: bool = 0,
+        stopDistance: int = 0,
+        stopAmount: int = 0,
+        profitDistance: int = 0,
+        profitAmount: int = 0,
+    ) -> tuple[dict, int]| None:
         payload = {
             "epic": epic,
             "direction": direction,
             "size": size,
             "guaranteedStop": guaranteedStop,
-            "stopLevel": stopLevel,
-            "profitLevel": profitLevel,
+            # "stopLevel": stopLevel,
+            # "profitLevel": profitLevel,
         }
         headers = {
             "X-SECURITY-TOKEN": self.X_SECURITY_TOKEN,
@@ -226,10 +226,10 @@ class TradingBot:
         res = requests.post(
             f"{self.DEMO_BASE_URL}/api/v1/positions", json=payload, headers=headers
         )
-        if res.status_code == 200:
-            return res.json()
+        # if res.status_code == 200:
+        #     return res.json()
 
-        return res.json()
+        return res.json(), res.status_code
 
     def getsinglePosition(self, dealId) -> dict | None:
         payload = ''
@@ -330,14 +330,27 @@ class TradingBot:
 
         return None
     
-    def getHistoricalPrices(self, epic: str) -> dict | None:
+    def getHistoricalPrices(self, epic: str, resolution: str, max: int) -> dict | None:
+        '''
+        Docstring for getHistoricalPrices
+        
+        :param self: Description
+        :param epic: Possible values: EURUSD
+        :type epic: str
+        :param resolution: Possible values are MINUTE, MINUTE_5, MINUTE_15, MINUTE_30, HOUR, HOUR_4, DAY, WEEK
+        :type resolution: str
+        :param max: from 1 to 1000
+        :type max: int
+        :return: Description
+        :rtype: dict | None
+        '''
         payload = ''
         headers = {
             "X-SECURITY-TOKEN": self.X_SECURITY_TOKEN,
             "CST": self.CST,
         }
         res = requests.get(
-            f"{self.DEMO_BASE_URL}/api/v1/prices/{epic}?resolution=MINUTE_15&max=1000", json=payload, headers=headers
+            f"{self.DEMO_BASE_URL}/api/v1/prices/{epic}?resolution={resolution}&max={max}", json=payload, headers=headers
         )
         if res.status_code == 200:
             return res.json()
@@ -379,4 +392,4 @@ class TradingBot:
     def removeMarketFromWatchlist(self) -> dict | None:
         return None
     
-    
+
