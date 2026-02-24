@@ -10,6 +10,7 @@ SYMBOL: str = "EURUSD"
 HMA_PERIOD: int = 20  # Length of the Hull window
 QUANTITY: int = 100
 SLEEP_TIME: int = 60
+TIMEFRAME = "MINUTE_30"
 
 def calculate_wma(prices: List[float], period: int) -> float:
     """Calculates the Weighted Moving Average (WMA)."""
@@ -70,7 +71,7 @@ def main() -> None:
     history_count: int = HMA_PERIOD * 3
     print(f"Fetching {history_count} candles for HMA warmup...")
     
-    result: Dict[str, Any] = tradingBot.getHistoricalPrices(SYMBOL, "MINUTE", history_count)
+    result: Dict[str, Any] = tradingBot.getHistoricalPrices(SYMBOL, TIMEFRAME, history_count)
     prices: List[float] = [item['openPrice']['ask'] for item in result['prices']]
     
     current_status: Optional[str] = None
@@ -79,7 +80,7 @@ def main() -> None:
     while True:
         try:
             # Update latest price
-            latest_res: Dict[str, Any] = tradingBot.getHistoricalPrices(SYMBOL, "MINUTE", 1)
+            latest_res: Dict[str, Any] = tradingBot.getHistoricalPrices(SYMBOL, TIMEFRAME, 1)
             new_price: float = latest_res['prices'][0]['openPrice']['ask']
             
             prices.pop(0)
