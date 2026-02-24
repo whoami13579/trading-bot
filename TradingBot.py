@@ -57,6 +57,11 @@ class TradingBot:
             return res.json()
 
 
+        payload = ""
+        headers = {"X-SECURITY-TOKEN": self.X_SECURITY_TOKEN, "CST": self.CST}
+        res = requests.get(
+            f"{self.DEMO_BASE_URL}/api/v1/ping", json=payload, headers=headers
+        )
         cstAndXSecurityToken = self.getCstAndXSecurityToken()
         if cstAndXSecurityToken:
             self.CST = cstAndXSecurityToken[0]
