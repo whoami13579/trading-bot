@@ -9,7 +9,7 @@ from TradingBot import TradingBot
 SYMBOL: str = "EURUSD"
 HMA_PERIOD: int = 20  # Length of the Hull window
 QUANTITY: int = 100
-SLEEP_TIME: int = 60
+SLEEP_TIME: int = 60 * 30
 TIMEFRAME = "MINUTE_30"
 
 def calculate_wma(prices: List[float], period: int) -> float:

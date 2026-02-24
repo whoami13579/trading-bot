@@ -14,16 +14,7 @@ class TradingBot:
         self.X_SECURITY_TOKEN = x_security_token
         self.ENCRYPTIONKEY = ""
 
-        if self.pingService() is None:
-            cstAndXSecurityToken = self.getCstAndXSecurityToken()
-            if cstAndXSecurityToken:
-                self.CST = cstAndXSecurityToken[0]
-                self.X_SECURITY_TOKEN = cstAndXSecurityToken[1]
-
-                dotenv_path = find_dotenv()
-                if dotenv_path:
-                    set_key(dotenv_path, "CST", self.CST)
-                    set_key(dotenv_path, "X_SECURITY_TOKEN", self.X_SECURITY_TOKEN)
+        self.pingService()
 
     def getCstAndXSecurityToken(self) -> list[str] | None:
         # Login Headers
@@ -64,6 +55,23 @@ class TradingBot:
         )
         if res.status_code == 200:
             return res.json()
+
+
+        cstAndXSecurityToken = self.getCstAndXSecurityToken()
+        if cstAndXSecurityToken:
+            self.CST = cstAndXSecurityToken[0]
+            self.X_SECURITY_TOKEN = cstAndXSecurityToken[1]
+
+            dotenv_path = find_dotenv()
+            if dotenv_path:
+                set_key(dotenv_path, "CST", self.CST)
+                set_key(dotenv_path, "X_SECURITY_TOKEN", self.X_SECURITY_TOKEN)
+
+        if res.status_code == 200:
+            return res.json()
+
+        print("ping service failed error: ", end='')
+        print(res.json)
 
         return None
 
@@ -210,6 +218,7 @@ class TradingBot:
         profitDistance: int = 0,
         profitAmount: int = 0,
     ) -> tuple[dict, int]| None:
+        self.pingService()
         payload = {
             "epic": epic,
             "direction": direction,
@@ -344,6 +353,7 @@ class TradingBot:
         :return: Description
         :rtype: dict | None
         '''
+        self.pingService()
         payload = ''
         headers = {
             "X-SECURITY-TOKEN": self.X_SECURITY_TOKEN,
