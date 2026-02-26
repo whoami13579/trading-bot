@@ -57,11 +57,7 @@ class TradingBot:
             return res.json()
 
 
-        payload = ""
-        headers = {"X-SECURITY-TOKEN": self.X_SECURITY_TOKEN, "CST": self.CST}
-        res = requests.get(
-            f"{self.DEMO_BASE_URL}/api/v1/ping", json=payload, headers=headers
-        )
+        # get CST and X_SECURITY_TOKEN, then ping service again
         cstAndXSecurityToken = self.getCstAndXSecurityToken()
         if cstAndXSecurityToken:
             self.CST = cstAndXSecurityToken[0]
@@ -71,6 +67,12 @@ class TradingBot:
             if dotenv_path:
                 set_key(dotenv_path, "CST", self.CST)
                 set_key(dotenv_path, "X_SECURITY_TOKEN", self.X_SECURITY_TOKEN)
+
+        payload = ""
+        headers = {"X-SECURITY-TOKEN": self.X_SECURITY_TOKEN, "CST": self.CST}
+        res = requests.get(
+            f"{self.DEMO_BASE_URL}/api/v1/ping", json=payload, headers=headers
+        )
 
         if res.status_code == 200:
             return res.json()

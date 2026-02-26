@@ -8,6 +8,7 @@ from TradingBot import TradingBot
 # --- Configuration ---
 SYMBOL: str = "EURUSD"
 HMA_PERIOD: int = 20  # Length of the Hull window
+TIME = "MINUTE_30"
 
 '''
 data: 1000
@@ -22,11 +23,24 @@ HOUR:          0.0018000000000042427
 HOUR_4:        0.002920000000002032
 '''
 
+'''
+data: 1000
+SYMBOL: AUDUSD
+HMA_PERIOD: 20  # Length of the Hull window
+
+MINUTE:       -0.002389999999998671   (16.66 hr)
+MINUTE_5:     -0.0008399999999993968  (3.47 d)
+MINUTE_15:    -0.005670000000000397   (10.41 d)
+MINUTE_30:     0.008459999999999912    (20.83 d)
+HOUR:         -0.009869999999998713
+HOUR_4:       -0.02316000000000029
+'''
+
 class TestStrategy:
     def __init__(self, tb: TradingBot):
         self.price = 0
         self.balance = 0
-        result: Dict[str, Any] = tb.getHistoricalPrices(SYMBOL, "HOUR_4", 1000)
+        result: Dict[str, Any] = tb.getHistoricalPrices(SYMBOL, TIME, 1000)
         self.all_prices: List[float] = [item['openPrice']['ask'] for item in result['prices']]
 
     def buy(self, price):
