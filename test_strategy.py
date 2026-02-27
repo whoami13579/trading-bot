@@ -6,8 +6,8 @@ from dotenv import find_dotenv, load_dotenv
 from TradingBot import TradingBot
 
 # --- Configuration ---
-SYMBOL: str = "EURUSD"
-HMA_PERIOD: int = 20  # Length of the Hull window
+SYMBOL: str = "AUDUSD"
+HMA_PERIOD: int = 25  # Length of the Hull window
 TIME = "MINUTE_30"
 
 '''
@@ -34,6 +34,32 @@ MINUTE_15:    -0.005670000000000397   (10.41 d)
 MINUTE_30:     0.008459999999999912    (20.83 d)
 HOUR:         -0.009869999999998713
 HOUR_4:       -0.02316000000000029
+'''
+
+'''
+data: 1000
+SYMBOL: AUDUSD
+HMA_PERIOD: 15  # Length of the Hull window
+
+MINUTE:       -0.0027999999999990255  (16.66 hr)
+MINUTE_5:     -0.0010099999999994003  (3.47 d)
+MINUTE_15:     0.006010000000000515   (10.41 d)
+MINUTE_30:     0.009039999999999715   (20.83 d)
+HOUR:         -0.010589999999998767
+HOUR_4:       -0.02725999999999973
+'''
+
+'''
+data: 1000
+SYMBOL: AUDUSD
+HMA_PERIOD: 25  # Length of the Hull window
+
+MINUTE:       -0.0028199999999992675  (16.66 hr)
+MINUTE_5:     -0.0009799999999995368  (3.47 d)
+MINUTE_15:     0.006980000000000652   (10.41 d)
+MINUTE_30:     0.00800999999999985   (20.83 d)
+HOUR:         -0.009459999999998359
+HOUR_4:       -0.02999999999999947
 '''
 
 class TestStrategy:
