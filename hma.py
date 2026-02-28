@@ -5,7 +5,7 @@ from typing import List, Optional, Dict, Any
 from dotenv import find_dotenv, load_dotenv
 from TradingBot import TradingBot
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # --- Configuration ---
 SYMBOL: str = "EURUSD"
@@ -98,6 +98,39 @@ def timeframe_to_minutes(timeframe: str) -> list[int]:
         case "MINUTE_30":
             return [0, 30]
 
+def is_market_open():
+    """
+    Checks if the current UTC time is between 
+    Sunday 21:00 and Friday 22:00.
+    """
+    now = datetime.now(timezone.utc)
+    weekday = now.weekday()  # Monday is 0, Sunday is 6
+    hour = now.hour
+
+    # Case 1: Sunday after 22:00
+    if weekday == 6 and hour >= 22:
+        return True
+    
+    # Case 2: Monday (0) through Thursday (3) - Always open
+    if 0 <= weekday <= 3:
+        return True
+    
+    # Case 3: Friday before 22:00
+    if weekday == 4 and hour < 22:
+        return True
+
+    # Otherwise, we are in the Friday night - Sunday evening gap
+    return False
+
+def wait_until_open(check_interval=60):
+    """
+    Pauses execution until the market open conditions are met.
+    """
+    while not is_market_open():
+        print(f"[{datetime.now(timezone.utc)}] Market closed. Waiting...")
+        time.sleep(check_interval)
+    
+    print("Market is now OPEN!")
 
 def main() -> None:
     # 1. Environment & Auth
@@ -112,6 +145,8 @@ def main() -> None:
 
     times = timeframe_to_minutes(TIMEFRAME)
     wait_until_targets(times)
+    if not is_market_open():
+        wait_until_open()
 
     # 2. Pre-load sufficient history
     # HMA needs more data than the period itself to stabilize (usually 2x-3x)
@@ -128,6 +163,9 @@ def main() -> None:
     # 3. Execution Loop
     while True:
         try:
+            if not is_market_open():
+                wait_until_open()
+
             # Update latest price
             latest_res: Dict[str, Any] = tradingBot.getHistoricalPrices(
                 SYMBOL, TIMEFRAME, 1

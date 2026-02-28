@@ -8,7 +8,7 @@ from TradingBot import TradingBot
 # --- Configuration ---
 SYMBOL: str = "EURUSD"
 HMA_PERIOD: int = 20  # Length of the Hull window
-TIME = "MINUTE_30"
+TIME = "MINUTE_15"
 
 '''
 data: 1000
