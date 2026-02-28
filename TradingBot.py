@@ -1,6 +1,7 @@
-import http.client
 import requests
 from dotenv import find_dotenv, set_key
+from datetime import datetime, timezone
+import time
 
 
 class TradingBot:
@@ -410,3 +411,37 @@ class TradingBot:
         return None
     
 
+    def is_market_open(self):
+        """
+        Checks if the current UTC time is between 
+        Sunday 21:00 and Friday 22:00.
+        """
+        now = datetime.now(timezone.utc)
+        weekday = now.weekday()  # Monday is 0, Sunday is 6
+        hour = now.hour
+
+        # Case 1: Sunday after 22:00
+        if weekday == 6 and hour >= 22:
+            return True
+        
+        # Case 2: Monday (0) through Thursday (3) - Always open
+        if 0 <= weekday <= 3:
+            return True
+        
+        # Case 3: Friday before 22:00
+        if weekday == 4 and hour < 22:
+            return True
+
+        # Otherwise, we are in the Friday night - Sunday evening gap
+        return False
+
+
+    def wait_until_open(self, check_interval=60):
+        """
+        Pauses execution until the market open conditions are met.
+        """
+        while not self.is_market_open():
+            print(f"[{datetime.now(timezone.utc)}] Market closed. Waiting...")
+            time.sleep(check_interval)
+        
+        print("Market is now OPEN!")

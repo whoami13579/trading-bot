@@ -6,6 +6,7 @@ from dotenv import find_dotenv, load_dotenv
 from TradingBot import TradingBot
 import time
 from datetime import datetime, timedelta, timezone
+from indicators import calculate_hma
 
 # --- Configuration ---
 SYMBOL: str = "EURUSD"
@@ -13,51 +14,6 @@ HMA_PERIOD: int = 20  # Length of the Hull window
 QUANTITY: int = 100
 SLEEP_TIME: int = 60 * 30
 TIMEFRAME = "MINUTE_30"
-
-
-def calculate_wma(prices: List[float], period: int) -> float:
-    """Calculates the Weighted Moving Average (WMA)."""
-    if len(prices) < period:
-        return 0.0
-
-    subset = prices[-period:]
-    weight_sum = sum(range(1, period + 1))
-    weighted_val = sum(p * (i + 1) for i, p in enumerate(subset))
-    return weighted_val / weight_sum
-
-
-def calculate_hma(prices: List[float], period: int) -> List[float]:
-    """
-    Calculates the Hull Moving Average sequence.
-    Formula: WMA(2*WMA(n/2) - WMA(n), sqrt(n))
-    """
-    half_period = period // 2
-    sqrt_period = int(math.sqrt(period))
-
-    # We need a series of 'raw' HMA values to calculate the final WMA smoothing
-    raw_hma: List[float] = []
-
-    # Generate the raw HMA series
-    # We need enough history to calculate the WMAs
-    for i in range(len(prices)):
-        if i < period:
-            continue
-
-        current_slice = prices[: i + 1]
-        wma_half = calculate_wma(current_slice, half_period)
-        wma_full = calculate_wma(current_slice, period)
-
-        raw_val = (2 * wma_half) - wma_full
-        raw_hma.append(raw_val)
-
-    # Final smoothing: WMA of the raw_hma series over sqrt(period)
-    final_hma: List[float] = []
-    for j in range(len(raw_hma)):
-        if j < sqrt_period:
-            continue
-        final_hma.append(calculate_wma(raw_hma[: j + 1], sqrt_period))
-
-    return final_hma
 
 
 def wait_until_targets(target_minutes):
@@ -98,39 +54,7 @@ def timeframe_to_minutes(timeframe: str) -> list[int]:
         case "MINUTE_30":
             return [0, 30]
 
-def is_market_open():
-    """
-    Checks if the current UTC time is between 
-    Sunday 21:00 and Friday 22:00.
-    """
-    now = datetime.now(timezone.utc)
-    weekday = now.weekday()  # Monday is 0, Sunday is 6
-    hour = now.hour
 
-    # Case 1: Sunday after 22:00
-    if weekday == 6 and hour >= 22:
-        return True
-    
-    # Case 2: Monday (0) through Thursday (3) - Always open
-    if 0 <= weekday <= 3:
-        return True
-    
-    # Case 3: Friday before 22:00
-    if weekday == 4 and hour < 22:
-        return True
-
-    # Otherwise, we are in the Friday night - Sunday evening gap
-    return False
-
-def wait_until_open(check_interval=60):
-    """
-    Pauses execution until the market open conditions are met.
-    """
-    while not is_market_open():
-        print(f"[{datetime.now(timezone.utc)}] Market closed. Waiting...")
-        time.sleep(check_interval)
-    
-    print("Market is now OPEN!")
 
 def main() -> None:
     # 1. Environment & Auth
@@ -145,8 +69,8 @@ def main() -> None:
 
     times = timeframe_to_minutes(TIMEFRAME)
     wait_until_targets(times)
-    if not is_market_open():
-        wait_until_open()
+    if not tradingBot.is_market_open():
+        tradingBot.wait_until_open()
 
     # 2. Pre-load sufficient history
     # HMA needs more data than the period itself to stabilize (usually 2x-3x)
@@ -163,8 +87,8 @@ def main() -> None:
     # 3. Execution Loop
     while True:
         try:
-            if not is_market_open():
-                wait_until_open()
+            if not tradingBot.is_market_open():
+                tradingBot.wait_until_open()
 
             # Update latest price
             latest_res: Dict[str, Any] = tradingBot.getHistoricalPrices(
