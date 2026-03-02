@@ -67,10 +67,7 @@ def main() -> None:
         os.getenv("X_SECURITY_TOKEN", ""),
     )
 
-    times = timeframe_to_minutes(TIMEFRAME)
-    wait_until_targets(times)
-    if not tradingBot.is_market_open():
-        tradingBot.wait_until_open()
+    TIMES = timeframe_to_minutes(TIMEFRAME)
 
     # 2. Pre-load sufficient history
     # HMA needs more data than the period itself to stabilize (usually 2x-3x)
@@ -87,6 +84,7 @@ def main() -> None:
     # 3. Execution Loop
     while True:
         try:
+            wait_until_targets(TIMES)
             if not tradingBot.is_market_open():
                 tradingBot.wait_until_open()
 
@@ -127,7 +125,6 @@ def main() -> None:
         except Exception as e:
             print(f"Error in main loop: {e}")
 
-        time.sleep(SLEEP_TIME)
 
 
 if __name__ == "__main__":
