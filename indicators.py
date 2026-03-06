@@ -42,3 +42,8 @@ def calculate_hma(prices: list[float], period: int) -> list[float]:
         final_hma.append(calculate_wma(raw_hma[: j + 1], sqrt_period))
 
     return final_hma
+
+
+def calculate_sma(prices, period):
+    """Calculates Simple Moving Average for a specific window."""
+    return sum(prices[-period:]) / period
