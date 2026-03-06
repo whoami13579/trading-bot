@@ -1,12 +1,12 @@
 import os
 import time
-import math
 from typing import List, Optional, Dict, Any
 from dotenv import find_dotenv, load_dotenv
 from TradingBot import TradingBot
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from indicators import calculate_hma
+from colors import colors
 
 # --- Configuration ---
 SYMBOL: str = "EURUSD"
@@ -111,19 +111,19 @@ def main() -> None:
 
             # 4. Slope Logic (Trend Following)
             if current_hma > prev_hma and current_status != "BUY":
-                print(">>> HMA Slope UP - Entering BUY")
+                print(f">>> HMA Slope UP - Entering {colors.BLUE}BUY{colors.ENDC}")
                 res, code = tradingBot.createPosition(SYMBOL, "BUY", QUANTITY)
                 if code == 200:
                     current_status = "BUY"
 
             elif current_hma < prev_hma and current_status != "SELL":
-                print(">>> HMA Slope DOWN - Entering SELL")
+                print(f">>> HMA Slope DOWN - Entering {colors.RED}SELL{colors.ENDC}")
                 res, code = tradingBot.createPosition(SYMBOL, "SELL", QUANTITY)
                 if code == 200:
                     current_status = "SELL"
 
         except Exception as e:
-            print(f"Error in main loop: {e}")
+            print(f"{colors.WARNING}Error in main loop: {e}{colors.ENDC}")
 
 
 
