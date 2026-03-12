@@ -28,7 +28,8 @@ class colors:
 
 
 
-
+'''
 print(f"{colors.WARNING}Warning: No active frommets remain. Continue?{colors.ENDC}")
 print(f"{colors.RED}sell{colors.ENDC}: 100usd")
 print(f"{colors.BLUE}buy{colors.ENDC}: 100usd")
+'''

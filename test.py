@@ -7,7 +7,7 @@ from indicators import calculate_hma, calculate_sma
 SYMBOL: str = "EURUSD"
 HMA_PERIOD: int = 9  # Length of the Hull window
 # TIMEFRAME = "MINUTE_30"
-TIMEFRAME = "MINUTE_5"
+TIMEFRAME = "MINUTE_30"
 
 
 def main() -> None:
@@ -29,7 +29,9 @@ def main() -> None:
     result: dict[str, any] = tradingBot.getHistoricalPrices(
         SYMBOL, TIMEFRAME, history_count
     )
-    prices: list[float] = [item["openPrice"]["ask"] for item in result["prices"]]
+    # print(result)
+    # prices: list[float] = [item["openPrice"]["ask"] for item in result["prices"]]
+    prices: list[float] = [item["closePrice"]["ask"] for item in result["prices"]]
 
 
     # Calculate HMA Sequence
@@ -45,6 +47,6 @@ if __name__ == "__main__":
 
 
 '''
-1.1613142962962961
-1.16052
+1.1623218888
+1.1626053703
 '''

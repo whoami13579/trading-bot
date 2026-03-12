@@ -2,6 +2,7 @@ import requests
 from dotenv import find_dotenv, set_key
 from datetime import datetime, timezone
 import time
+from typing import Any, List
 
 
 class TradingBot:
@@ -374,6 +375,13 @@ class TradingBot:
             return res.json()
 
         return None
+
+    def getHistoricalPricesList(self, symbol: str, time_frame: str, period: int) -> list[float]:
+        result: dict[str, Any] = self.getHistoricalPrices(
+            symbol, time_frame, period
+        )
+        prices: List[float] = [item["openPrice"]["ask"] for item in result["prices"]]
+        return prices
     
     def getClientSentimentForMarkets(self) -> dict | None:
         return None

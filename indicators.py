@@ -1,4 +1,6 @@
 import math
+from TradingBot import TradingBot
+from typing import Any, List
 
 def calculate_wma(prices: list[float], period: int) -> float:
     """Calculates the Weighted Moving Average (WMA)."""
@@ -44,6 +46,58 @@ def calculate_hma(prices: list[float], period: int) -> list[float]:
     return final_hma
 
 
-def calculate_sma(prices, period):
+def calculate_sma(prices, period)->float:
     """Calculates Simple Moving Average for a specific window."""
     return sum(prices[-period:]) / period
+
+
+def calculate_ema(prices, span, smoothing=2):
+    if len(prices) < span:
+        return "Not enough data"
+    
+    # Calculate the multiplier
+    multiplier = smoothing / (1 + span)
+    
+    # Start with the SMA for the first EMA value
+    ema = sum(prices[:span]) / span
+    ema_values = [None] * (span - 1) + [ema]
+    
+    # Calculate EMA for the remaining prices
+    for price in prices[span:]:
+        ema = (price - ema) * multiplier + ema
+        ema_values.append(ema)
+        
+    return ema_values
+
+def calculate_multiple(tradingBot: TradingBot, symbol: str, time_frame: str)->str:
+    buy_or_sell = 0
+    prices = tradingBot.getHistoricalPricesList(symbol, time_frame, 210)
+    periods = [10, 20, 30, 50, 100, 200]
+    
+    for period in periods:
+        sma_value = calculate_sma(prices, period)
+        if prices[-1] < sma_value:
+            buy_or_sell -= 1
+        else:
+            buy_or_sell += 1
+
+    for period in periods:
+        ema_values = calculate_ema(prices, period)
+        if prices[-1] < ema_values[-1]:
+            buy_or_sell -= 1
+        else:
+            buy_or_sell += 1
+
+    hma_period = 9
+    hma_values = calculate_hma(prices, hma_period)
+    if hma_values[-2] < hma_values[-1]:
+        buy_or_sell += 1
+    else:
+        buy_or_sell -= 1
+    
+    if 1 < buy_or_sell:
+        return "Buy"
+    elif buy_or_sell < -1:
+        return "SELL"
+    else:
+        return "Neutral"
