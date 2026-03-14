@@ -2,9 +2,10 @@ import os
 from dotenv import find_dotenv, load_dotenv
 from TradingBot import TradingBot
 from indicators import calculate_hma, calculate_sma
+import time
 
 # --- Configuration ---
-SYMBOL: str = "EURUSD"
+SYMBOL: str = "AUDUSD"
 HMA_PERIOD: int = 9  # Length of the Hull window
 # TIMEFRAME = "MINUTE_30"
 TIMEFRAME = "MINUTE_30"
@@ -20,33 +21,18 @@ def main() -> None:
         os.getenv("CST", ""),
         os.getenv("X_SECURITY_TOKEN", ""),
     )
+    result, _ = tradingBot.createPosition(SYMBOL, "SELL", 100)
+    dealReference = result["dealReference"]
+    result = tradingBot.getPositionOrderConfirmation(dealReference)
+    dealId = result["affectedDeals"][0]["dealId"]
+    time.sleep(5)
+    res = tradingBot.closePosition(dealId)
 
-    # 2. Pre-load sufficient history
-    # HMA needs more data than the period itself to stabilize (usually 2x-3x)
-    history_count: int = HMA_PERIOD * 3
-    print(f"Fetching {history_count} candles for HMA warmup...")
+    print(dealId)
+    print(res)
 
-    result: dict[str, any] = tradingBot.getHistoricalPrices(
-        SYMBOL, TIMEFRAME, history_count
-    )
-    # print(result)
-    # prices: list[float] = [item["openPrice"]["ask"] for item in result["prices"]]
-    prices: list[float] = [item["closePrice"]["ask"] for item in result["prices"]]
-
-
-    # Calculate HMA Sequence
-    hma_values = calculate_hma(prices, HMA_PERIOD)
-    print(hma_values[-1])
-
-    calculate_sma(prices, 10)
 
 
 
 if __name__ == "__main__":
     main()
-
-
-'''
-1.1623218888
-1.1626053703
-'''

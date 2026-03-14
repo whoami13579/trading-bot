@@ -6,9 +6,15 @@ from typing import Any, List
 
 
 class TradingBot:
-    def __init__(self, x_cap_api_key, identifier, password, cst, x_security_token):
-        # self.BASE_URL = "https://api-capital.backend-capital.com"
-        self.DEMO_BASE_URL = "https://demo-api-capital.backend-capital.com"
+    def __init__(self, x_cap_api_key: str, identifier: str, password: str, cst, x_security_token: str, real_account: bool = False):
+        REAL_BASE_URL = "https://api-capital.backend-capital.com"
+        DEMO_BASE_URL = "https://demo-api-capital.backend-capital.com"
+        if real_account:
+            self.BASE_URL = REAL_BASE_URL
+        else:
+            self.BASE_URL = DEMO_BASE_URL
+
+        self.BASE_URL = "https://demo-api-capital.backend-capital.com"
         self.X_CAP_API_KEY = x_cap_api_key
         self.IDENTIFIER = identifier
         self.PASSWORD = password
@@ -29,7 +35,7 @@ class TradingBot:
         payload = {"identifier": self.IDENTIFIER, "password": self.PASSWORD}
 
         response = requests.post(
-            f"{self.DEMO_BASE_URL}/api/v1/session", json=payload, headers=headers
+            f"{self.BASE_URL}/api/v1/session", json=payload, headers=headers
         )
 
         if response.status_code == 200:
@@ -43,7 +49,7 @@ class TradingBot:
             return None
 
     def getServerTime(self) -> str | None:
-        res = requests.get(f"{self.DEMO_BASE_URL}/api/v1/time")
+        res = requests.get(f"{self.BASE_URL}/api/v1/time")
         if res.status_code == 200:
             return res.json()
 
@@ -53,7 +59,7 @@ class TradingBot:
         payload = ""
         headers = {"X-SECURITY-TOKEN": self.X_SECURITY_TOKEN, "CST": self.CST}
         res = requests.get(
-            f"{self.DEMO_BASE_URL}/api/v1/ping", json=payload, headers=headers
+            f"{self.BASE_URL}/api/v1/ping", json=payload, headers=headers
         )
         if res.status_code == 200:
             return res.json()
@@ -73,7 +79,7 @@ class TradingBot:
         payload = ""
         headers = {"X-SECURITY-TOKEN": self.X_SECURITY_TOKEN, "CST": self.CST}
         res = requests.get(
-            f"{self.DEMO_BASE_URL}/api/v1/ping", json=payload, headers=headers
+            f"{self.BASE_URL}/api/v1/ping", json=payload, headers=headers
         )
 
         if res.status_code == 200:
@@ -88,7 +94,7 @@ class TradingBot:
         payload = ""
         headers = {"X-CAP-API-KEY": self.X_CAP_API_KEY}
         res = requests.get(
-            f"{self.DEMO_BASE_URL}/api/v1/session/encryptionKey",
+            f"{self.BASE_URL}/api/v1/session/encryptionKey",
             json=payload,
             headers=headers,
         )
@@ -106,7 +112,7 @@ class TradingBot:
         payload = ""
         headers = {"X-SECURITY-TOKEN": self.X_SECURITY_TOKEN, "CST": self.CST}
         res = requests.get(
-            f"{self.DEMO_BASE_URL}/api/v1/session", json=payload, headers=headers
+            f"{self.BASE_URL}/api/v1/session", json=payload, headers=headers
         )
         if res.status_code == 200:
             return res.json()
@@ -120,7 +126,7 @@ class TradingBot:
             "Content-Type": "application/json",
         }
         res = requests.post(
-            f"{self.DEMO_BASE_URL}/api/v1/session", json=payload, headers=headers
+            f"{self.BASE_URL}/api/v1/session", json=payload, headers=headers
         )
         if res.status_code == 200:
             return res.json()
@@ -137,7 +143,7 @@ class TradingBot:
         payload = ""
         headers = {"X-SECURITY-TOKEN": self.X_SECURITY_TOKEN, "CST": self.CST}
         res = requests.get(
-            f"{self.DEMO_BASE_URL}/api/v1/accounts", json=payload, headers=headers
+            f"{self.BASE_URL}/api/v1/accounts", json=payload, headers=headers
         )
         if res.status_code == 200:
             return res.json()
@@ -148,7 +154,7 @@ class TradingBot:
         payload = ""
         headers = {"X-SECURITY-TOKEN": self.X_SECURITY_TOKEN, "CST": self.CST}
         res = requests.get(
-            f"{self.DEMO_BASE_URL}/api/v1/accounts/preferences",
+            f"{self.BASE_URL}/api/v1/accounts/preferences",
             json=payload,
             headers=headers,
         )
@@ -164,7 +170,7 @@ class TradingBot:
         payload = ""
         headers = {"X-SECURITY-TOKEN": self.X_SECURITY_TOKEN, "CST": self.CST}
         res = requests.get(
-            f"{self.DEMO_BASE_URL}/api/v1/history/activity",
+            f"{self.BASE_URL}/api/v1/history/activity",
             json=payload,
             headers=headers,
         )
@@ -177,7 +183,7 @@ class TradingBot:
         payload = ""
         headers = {"X-SECURITY-TOKEN": self.X_SECURITY_TOKEN, "CST": self.CST}
         res = requests.get(
-            f"{self.DEMO_BASE_URL}/api/v1/history/transactions",
+            f"{self.BASE_URL}/api/v1/history/transactions",
             json=payload,
             headers=headers,
         )
@@ -193,7 +199,7 @@ class TradingBot:
         payload = ""
         headers = {"X-SECURITY-TOKEN": self.X_SECURITY_TOKEN, "CST": self.CST}
         res = requests.get(
-            f"{self.DEMO_BASE_URL}/api/v1/confirms/{dealReference}",
+            f"{self.BASE_URL}/api/v1/confirms/{dealReference}",
             json=payload,
             headers=headers,
         )
@@ -206,7 +212,7 @@ class TradingBot:
         payload = ""
         headers = {"X-SECURITY-TOKEN": self.X_SECURITY_TOKEN, "CST": self.CST}
         res = requests.get(
-            f"{self.DEMO_BASE_URL}/api/v1/positions", json=payload, headers=headers
+            f"{self.BASE_URL}/api/v1/positions", json=payload, headers=headers
         )
         if res.status_code == 200:
             return res.json()
@@ -242,7 +248,7 @@ class TradingBot:
             "Content-Type": "application/json",
         }
         res = requests.post(
-            f"{self.DEMO_BASE_URL}/api/v1/positions", json=payload, headers=headers
+            f"{self.BASE_URL}/api/v1/positions", json=payload, headers=headers
         )
         # if res.status_code == 200:
         #     return res.json()
@@ -256,7 +262,7 @@ class TradingBot:
             "CST": self.CST,
         }
         res = requests.get(
-            f"{self.DEMO_BASE_URL}/api/v1/positions/{dealId}", json=payload, headers=headers
+            f"{self.BASE_URL}/api/v1/positions/{dealId}", json=payload, headers=headers
         )
         if res.status_code == 200:
             return res.json()
@@ -266,8 +272,15 @@ class TradingBot:
     def updatePosition(self) -> dict | None:
         return None
     
-    def closePosition(self) -> dict | None:
-        return None
+    def closePosition(self, dealId: str) -> dict | None:
+        payload = ''
+        headers = {
+        'X-SECURITY-TOKEN': self.X_SECURITY_TOKEN,
+        'CST': self.CST
+        }
+        res = requests.delete(f"{self.BASE_URL}/api/v1/positions/{dealId}", json=payload, headers=headers)
+
+        return res.json(), res.status_code
 
     def getAllWorkingOrders(self) -> dict | None:
         payload = ''
@@ -276,7 +289,7 @@ class TradingBot:
             "CST": self.CST,
         }
         res = requests.get(
-            f"{self.DEMO_BASE_URL}/api/v1/workingorders", json=payload, headers=headers
+            f"{self.BASE_URL}/api/v1/workingorders", json=payload, headers=headers
         )
         if res.status_code == 200:
             return res.json()
@@ -299,7 +312,7 @@ class TradingBot:
             "CST": self.CST,
         }
         res = requests.get(
-            f"{self.DEMO_BASE_URL}/api/v1/marketnavigation", json=payload, headers=headers
+            f"{self.BASE_URL}/api/v1/marketnavigation", json=payload, headers=headers
         )
         if res.status_code == 200:
             return res.json()
@@ -313,7 +326,7 @@ class TradingBot:
             "CST": self.CST,
         }
         res = requests.get(
-            f"{self.DEMO_BASE_URL}/api/v1/marketnavigation/{nodeId}", json=payload, headers=headers
+            f"{self.BASE_URL}/api/v1/marketnavigation/{nodeId}", json=payload, headers=headers
         )
         if res.status_code == 200:
             return res.json()
@@ -327,7 +340,7 @@ class TradingBot:
             "CST": self.CST,
         }
         res = requests.get(
-            f"{self.DEMO_BASE_URL}/api/v1/markets?epics={epics}", json=payload, headers=headers
+            f"{self.BASE_URL}/api/v1/markets?epics={epics}", json=payload, headers=headers
         )
         if res.status_code == 200:
             return res.json()
@@ -341,7 +354,7 @@ class TradingBot:
             "CST": self.CST,
         }
         res = requests.get(
-            f"{self.DEMO_BASE_URL}/api/v1/markets/{epic}", json=payload, headers=headers
+            f"{self.BASE_URL}/api/v1/markets/{epic}", json=payload, headers=headers
         )
         if res.status_code == 200:
             return res.json()
@@ -369,7 +382,7 @@ class TradingBot:
             "CST": self.CST,
         }
         res = requests.get(
-            f"{self.DEMO_BASE_URL}/api/v1/prices/{epic}?resolution={resolution}&max={max}", json=payload, headers=headers
+            f"{self.BASE_URL}/api/v1/prices/{epic}?resolution={resolution}&max={max}", json=payload, headers=headers
         )
         if res.status_code == 200:
             return res.json()
@@ -396,7 +409,7 @@ class TradingBot:
             "CST": self.CST,
         }
         res = requests.get(
-            f"{self.DEMO_BASE_URL}/api/v1/watchlists", json=payload, headers=headers
+            f"{self.BASE_URL}/api/v1/watchlists", json=payload, headers=headers
         )
         if res.status_code == 200:
             return res.json()

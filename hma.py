@@ -7,13 +7,15 @@ import time
 from datetime import datetime, timedelta
 from indicators import calculate_hma
 from colors import colors
+import argparse
 
 # --- Configuration ---
-SYMBOL: str = "EURUSD"
-HMA_PERIOD: int = 20  # Length of the Hull window
-QUANTITY: int = 100
-SLEEP_TIME: int = 60 * 30
-TIMEFRAME = "MINUTE_30"
+DEFAULT_SYMBOL: str = "EURUSD"
+DEFAULT_HMA_PERIOD: int = 20  # Length of the Hull window
+DEFAULT_QUANTITY: int = 100
+DEFAULT_SLEEP_TIME: int = 60 * 30
+DEFAULT_TIMEFRAME = "MINUTE_30"
+DEFAULT_DAYS = 5
 
 
 def wait_until_targets(target_minutes):
@@ -57,6 +59,40 @@ def timeframe_to_minutes(timeframe: str) -> list[int]:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--real", action="store_true")
+    parser.add_argument("--size", type=float)
+    parser.add_argument("--symbol", type=str)
+    parser.add_argument("--hma_period", type=str)
+    parser.add_argument("--time_frame", type=str)
+    parser.add_argument("--days", type=int)
+
+    args = parser.parse_args()
+    if args.size:
+        QUANTITY: int = args.size
+    else:
+        QUANTITY: int = DEFAULT_QUANTITY
+    
+    if args.symbol:
+        SYMBOL: str = args.symbol
+    else:
+        SYMBOL: str = DEFAULT_SYMBOL
+    
+    if args.hma_period:
+        HMA_PERIOD: str = args.hma_period
+    else:
+        HMA_PERIOD: str = DEFAULT_HMA_PERIOD
+
+    if args.time_frame:
+        TIMEFRAME: str = args.time_frame
+    else:
+        TIMEFRAME: str = DEFAULT_TIMEFRAME
+
+    if args.days:
+        DAYS: str = args.days
+    else:
+        DAYS: str = DEFAULT_DAYS
+
     # 1. Environment & Auth
     load_dotenv(find_dotenv())
     tradingBot = TradingBot(
@@ -65,6 +101,7 @@ def main() -> None:
         os.getenv("password", ""),
         os.getenv("CST", ""),
         os.getenv("X_SECURITY_TOKEN", ""),
+        args.real,
     )
 
     TIMES = timeframe_to_minutes(TIMEFRAME)
@@ -72,12 +109,7 @@ def main() -> None:
     # 2. Pre-load sufficient history
     # HMA needs more data than the period itself to stabilize (usually 2x-3x)
     history_count: int = HMA_PERIOD * 3
-    print(f"Fetching {history_count} candles for HMA warmup...")
-
-    result: Dict[str, Any] = tradingBot.getHistoricalPrices(
-        SYMBOL, TIMEFRAME, history_count
-    )
-    prices: List[float] = [item["openPrice"]["ask"] for item in result["prices"]]
+    prices: List[float] = None
 
     current_status: Optional[str] = None
 
@@ -85,17 +117,15 @@ def main() -> None:
     while True:
         try:
             wait_until_targets(TIMES)
-            if not tradingBot.is_market_open():
-                tradingBot.wait_until_open()
+
+            if DAYS == 7:
+                pass
+            elif DAYS == 5:
+                if not tradingBot.is_market_open():
+                    tradingBot.wait_until_open()
 
             # Update latest price
-            latest_res: Dict[str, Any] = tradingBot.getHistoricalPrices(
-                SYMBOL, TIMEFRAME, 1
-            )
-            new_price: float = latest_res["prices"][0]["openPrice"]["ask"]
-
-            prices.pop(0)
-            prices.append(new_price)
+            prices = tradingBot.getHistoricalPricesList(SYMBOL, TIMEFRAME, history_count)
 
             # Calculate HMA Sequence
             hma_values = calculate_hma(prices, HMA_PERIOD)
@@ -107,7 +137,7 @@ def main() -> None:
             current_hma = hma_values[-1]
             prev_hma = hma_values[-2]
 
-            print(f"Price: {new_price:.5f} | HMA: {current_hma:.5f}")
+            print(f"Price: {prices[-1]:.5f} | HMA: {current_hma:.5f}")
 
             # 4. Slope Logic (Trend Following)
             if current_hma > prev_hma and current_status != "BUY":
