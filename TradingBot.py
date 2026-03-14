@@ -3,6 +3,7 @@ from dotenv import find_dotenv, set_key
 from datetime import datetime, timezone
 import time
 from typing import Any, List
+from tradingPosition import TradingPosition
 
 
 class TradingBot:
@@ -214,10 +215,22 @@ class TradingBot:
         res = requests.get(
             f"{self.BASE_URL}/api/v1/positions", json=payload, headers=headers
         )
-        if res.status_code == 200:
-            return res.json()
 
-        return None
+        return res.json(), res.status_code
+    
+    def getAllPositionsList(self) -> list[TradingPosition]:
+        result, code = self.getAllPositions()
+
+        # List comprehension to create the objects
+        trading_positions_list = [
+            TradingPosition(
+                epic=item['market']['epic'], 
+                dealId=item['position']['dealId']
+            ) 
+            for item in result['positions']
+        ]
+
+        return trading_positions_list
 
     def createPosition(
         self,

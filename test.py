@@ -2,7 +2,7 @@ import os
 from dotenv import find_dotenv, load_dotenv
 from TradingBot import TradingBot
 from indicators import calculate_hma, calculate_sma
-import time
+import json
 
 # --- Configuration ---
 SYMBOL: str = "AUDUSD"
@@ -21,15 +21,21 @@ def main() -> None:
         os.getenv("CST", ""),
         os.getenv("X_SECURITY_TOKEN", ""),
     )
-    result, _ = tradingBot.createPosition(SYMBOL, "SELL", 100)
-    dealReference = result["dealReference"]
-    result = tradingBot.getPositionOrderConfirmation(dealReference)
-    dealId = result["affectedDeals"][0]["dealId"]
-    time.sleep(5)
-    res = tradingBot.closePosition(dealId)
+    # result, _ = tradingBot.createPosition(SYMBOL, "SELL", 100)
+    # dealReference = result["dealReference"]
+    # result = tradingBot.getPositionOrderConfirmation(dealReference)
+    # dealId = result["affectedDeals"][0]["dealId"]
+    # time.sleep(5)
+    # res = tradingBot.closePosition(dealId)
 
-    print(dealId)
-    print(res)
+    # print(dealId)
+    # print(res)
+
+    results = tradingBot.getAllPositionsList()
+    for position in results:
+        print(position)
+
+    # tradingBot.closePosition('0015421d-0055-311e-0000-000081fa0c09')
 
 
 

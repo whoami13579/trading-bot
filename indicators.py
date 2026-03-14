@@ -88,7 +88,7 @@ def calculate_multiple(tradingBot: TradingBot, symbol: str, time_frame: str)->st
         else:
             buy_or_sell += 1
 
-    hma_period = 9
+    hma_period = 9 * 3
     hma_values = calculate_hma(prices, hma_period)
     if hma_values[-2] < hma_values[-1]:
         buy_or_sell += 1
@@ -96,8 +96,18 @@ def calculate_multiple(tradingBot: TradingBot, symbol: str, time_frame: str)->st
         buy_or_sell -= 1
     
     if 1 < buy_or_sell:
-        return "Buy"
+        return "BUY"
     elif buy_or_sell < -1:
         return "SELL"
     else:
         return "Neutral"
+
+def calculate_hma_result(tradingBot: TradingBot, symbol: str, time_frame: str, hma_period: str)->str:
+    prices = tradingBot.getHistoricalPricesList(symbol, time_frame, hma_period * 3)
+    hma_values = calculate_hma(prices, hma_period)
+    
+    if hma_values[-2] < hma_values[-1]:
+        return "BUY"
+    else:
+        return "SELL"
+    
