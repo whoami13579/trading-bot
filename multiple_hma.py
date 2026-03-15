@@ -1,6 +1,5 @@
 import os
 import time
-from typing import List, Optional, Dict, Any
 from dotenv import find_dotenv, load_dotenv
 from TradingBot import TradingBot
 import time
@@ -8,6 +7,7 @@ from datetime import datetime, timedelta
 from indicators import calculate_hma, calculate_multiple, calculate_hma_result
 from colors import colors
 import argparse
+import traceback
 
 # --- Configuration ---
 DEFAULT_SYMBOL: str = "EURUSD"
@@ -149,9 +149,11 @@ def main() -> None:
                     else:
                         print(f">>> {colors.RED}SELL{colors.ENDC}")
         except Exception as e:
-            print("#####")
+            print(f"{colors.WARNING}#####{colors.ENDC}")
             print(f"{colors.WARNING}Error in main loop: {e}{colors.ENDC}")
-            print("#####")
+            print("")
+            print(traceback.format_exc())
+            print(f"{colors.WARNING}#####{colors.ENDC}")
 
 
 
