@@ -53,9 +53,6 @@ def main() -> None:
     for i in range(9, 60, 10):
         times.append(i)
     
-    print(times)
-    exit()
-
     while True:
         try:
             wait_until_targets([])
