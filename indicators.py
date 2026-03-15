@@ -69,9 +69,9 @@ def calculate_ema(prices, span, smoothing=2):
         
     return ema_values
 
-def calculate_multiple(tradingBot: TradingBot, symbol: str, time_frame: str, ping: bool = True)->str:
+def calculate_multiple(tradingBot: TradingBot, symbol: str, time_frame: str)->str:
     buy_or_sell = 0
-    prices = tradingBot.getHistoricalPricesList(symbol, time_frame, 210, ping=ping)
+    prices = tradingBot.getHistoricalPricesList(symbol, time_frame, 210)
     periods = [10, 20, 30, 50, 100, 200]
     
     for period in periods:
@@ -102,8 +102,8 @@ def calculate_multiple(tradingBot: TradingBot, symbol: str, time_frame: str, pin
     else:
         return "Neutral"
 
-def calculate_hma_result(tradingBot: TradingBot, symbol: str, time_frame: str, hma_period: str, ping: bool = True)->str:
-    prices = tradingBot.getHistoricalPricesList(symbol, time_frame, hma_period * 3, ping=ping)
+def calculate_hma_result(tradingBot: TradingBot, symbol: str, time_frame: str, hma_period: str)->str:
+    prices = tradingBot.getHistoricalPricesList(symbol, time_frame, hma_period * 3)
     hma_values = calculate_hma(prices, hma_period)
     
     if hma_values[-2] < hma_values[-1]:

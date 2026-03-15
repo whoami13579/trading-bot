@@ -245,10 +245,7 @@ class TradingBot:
         stopAmount: int = 0,
         profitDistance: int = 0,
         profitAmount: int = 0,
-        ping: bool = True
     ) -> tuple[dict, int]| None:
-        if ping:
-            self.pingService()
         payload = {
             "epic": epic,
             "direction": direction,
@@ -376,7 +373,7 @@ class TradingBot:
 
         return None
     
-    def getHistoricalPrices(self, epic: str, resolution: str, max: int, ping: bool = True) -> dict | None:
+    def getHistoricalPrices(self, epic: str, resolution: str, max: int) -> dict | None:
         '''
         Docstring for getHistoricalPrices
         
@@ -390,8 +387,6 @@ class TradingBot:
         :return: Description
         :rtype: dict | None
         '''
-        if ping:
-            self.pingService()
         payload = ''
         headers = {
             "X-SECURITY-TOKEN": self.X_SECURITY_TOKEN,
@@ -405,9 +400,9 @@ class TradingBot:
 
         return None
 
-    def getHistoricalPricesList(self, symbol: str, time_frame: str, period: int, ping: bool = True) -> list[float]:
+    def getHistoricalPricesList(self, symbol: str, time_frame: str, period: int) -> list[float]:
         result: dict[str, Any] = self.getHistoricalPrices(
-            symbol, time_frame, period, ping=ping
+            symbol, time_frame, period
         )
         prices: List[float] = [item["openPrice"]["ask"] for item in result["prices"]]
         return prices

@@ -127,8 +127,8 @@ def main() -> None:
                 if not tradingBot.is_market_open():
                     tradingBot.wait_until_open()
 
-            long_term_result = calculate_multiple(tradingBot, SYMBOL, LONG_TERM, ping=False)
-            short_term_result = calculate_hma_result(tradingBot, SYMBOL, TIMEFRAME, HMA_PERIOD, ping=False)
+            long_term_result = calculate_multiple(tradingBot, SYMBOL, LONG_TERM)
+            short_term_result = calculate_hma_result(tradingBot, SYMBOL, TIMEFRAME, HMA_PERIOD)
 
             if short_term_result != long_term_result:
                 all_positions = tradingBot.getAllPositionsList()
