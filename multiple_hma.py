@@ -120,7 +120,6 @@ def main() -> None:
     while True:
         try:
             wait_until_targets(TIMES)
-            tradingBot.pingService()
 
             if DAYS == 7:
                 pass
@@ -150,7 +149,9 @@ def main() -> None:
                     else:
                         print(f">>> {colors.RED}SELL{colors.ENDC}")
         except Exception as e:
+            print("#####")
             print(f"{colors.WARNING}Error in main loop: {e}{colors.ENDC}")
+            print("#####")
 
 
 
