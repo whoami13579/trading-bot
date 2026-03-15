@@ -55,7 +55,7 @@ def main() -> None:
     
     while True:
         try:
-            wait_until_targets([])
+            wait_until_targets(times)
             tradingBot.pingService()
         except Exception as e:
             print("#####")
