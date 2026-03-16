@@ -138,19 +138,26 @@ def main() -> None:
                 targets = [pos for pos in all_positions if pos.epic == SYMBOL]
                 if 0 < len(targets):
                     for target in targets:
-                        tradingBot.closePosition(target.dealId)
+                        result, code = tradingBot.closePosition(target.dealId)
                     
-                    print(f">>> {colors.YELLOW}close position{colors.ENDC}")
+                    if code == 200:
+                        print(f">>> {colors.YELLOW}close position{colors.ENDC}")
+                    else:
+                        print(result)
             elif short_term_result == long_term_result:
                 all_positions = tradingBot.getAllPositionsList()
                 targets = [pos for pos in all_positions if pos.epic == SYMBOL]
                 if len(targets) == 0:
-                    tradingBot.createPosition(SYMBOL, short_term_result, QUANTITY)
+                    result, code = tradingBot.createPosition(SYMBOL, short_term_result, QUANTITY)
                     
-                    if short_term_result == "BUY":
-                        print(f">>> {colors.BLUE}BUY{colors.ENDC}")
+                    if code == 200:
+                        if short_term_result == "BUY":
+                            print(f">>> {colors.BLUE}BUY{colors.ENDC}")
+                        else:
+                            print(f">>> {colors.RED}SELL{colors.ENDC}")
                     else:
-                        print(f">>> {colors.RED}SELL{colors.ENDC}")
+                        print(result)
+
         except Exception as e:
             print(f"{colors.WARNING}#####{colors.ENDC}")
             print(f"{colors.WARNING}Error in main loop: {e}{colors.ENDC}")

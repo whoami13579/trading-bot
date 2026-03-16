@@ -265,8 +265,9 @@ class TradingBot:
         res = requests.post(
             f"{self.BASE_URL}/api/v1/positions", json=payload, headers=headers
         )
-        # if res.status_code == 200:
-        #     return res.json()
+
+        if res.status_code != 200:
+            print(res.json())
 
         return res.json(), res.status_code
 
@@ -295,6 +296,8 @@ class TradingBot:
         }
         res = requests.delete(f"{self.BASE_URL}/api/v1/positions/{dealId}", json=payload, headers=headers)
 
+        if res.status_code != 200:
+            print(res.json())
         return res.json(), res.status_code
 
     def getAllWorkingOrders(self) -> dict | None:
