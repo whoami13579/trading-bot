@@ -247,6 +247,7 @@ class TradingBot:
         profitDistance: int = 0,
         profitAmount: int = 0,
     ) -> tuple[dict, int]| None:
+        self.load_keys()
         payload = {
             "epic": epic,
             "direction": direction,
