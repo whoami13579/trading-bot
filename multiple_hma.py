@@ -143,7 +143,7 @@ def main() -> None:
                     if code == 200:
                         print(f">>> {colors.YELLOW}close position{colors.ENDC}")
                     else:
-                        print(result)
+                        print(f"failed to close position ({result})")
             elif short_term_result == long_term_result:
                 all_positions = tradingBot.getAllPositionsList()
                 targets = [pos for pos in all_positions if pos.epic == SYMBOL]
@@ -156,7 +156,7 @@ def main() -> None:
                         else:
                             print(f">>> {colors.RED}SELL{colors.ENDC}")
                     else:
-                        print(result)
+                        print(f"failed to create {short_term_result} position ({result})")
 
         except Exception as e:
             print(f"{colors.WARNING}#####{colors.ENDC}")

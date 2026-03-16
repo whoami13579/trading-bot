@@ -267,7 +267,7 @@ class TradingBot:
         )
 
         if res.status_code != 200:
-            print(res.json())
+            print(f"createPosition : {res.json()}")
 
         return res.json(), res.status_code
 
@@ -297,7 +297,7 @@ class TradingBot:
         res = requests.delete(f"{self.BASE_URL}/api/v1/positions/{dealId}", json=payload, headers=headers)
 
         if res.status_code != 200:
-            print(res.json())
+            print(f"closePosition : {res.json()}")
         return res.json(), res.status_code
 
     def getAllWorkingOrders(self) -> dict | None:
@@ -403,6 +403,9 @@ class TradingBot:
             f"{self.BASE_URL}/api/v1/prices/{epic}?resolution={resolution}&max={max}", json=payload, headers=headers
         )
 
+        if res.status_code != 200:
+            print(f"getHistoricalPrices : {res.json()}")
+
         return res.json(), res.status_code
 
     def getHistoricalPricesList(self, symbol: str, time_frame: str, period: int) -> list[float]:
@@ -411,7 +414,7 @@ class TradingBot:
         )
 
         if code != 200:
-            print(result)
+            print(f"getHistoricalPricesList : {result}")
             return []
 
         prices: List[float] = [item["closePrice"]["ask"] for item in result["prices"]]
