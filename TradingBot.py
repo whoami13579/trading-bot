@@ -64,7 +64,7 @@ class TradingBot:
             f"{self.BASE_URL}/api/v1/ping", json=payload, headers=headers
         )
         if res.status_code == 200:
-            return res.json()
+            return res.json(), res.status_code
 
 
         # get CST and X_SECURITY_TOKEN, then ping service again
@@ -90,7 +90,7 @@ class TradingBot:
         print("ping service failed error: ", end='')
         print(res.json)
 
-        return None
+        return res.json(), res.status_code
 
     def getEncryptionKey(self) -> dict | None:
         payload = ""
@@ -409,6 +409,7 @@ class TradingBot:
 
         if code != 200:
             print(result)
+            return []
 
         prices: List[float] = [item["closePrice"]["ask"] for item in result["prices"]]
         return prices
