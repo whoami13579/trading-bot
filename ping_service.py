@@ -50,7 +50,7 @@ def main() -> None:
     )
 
     times = []
-    for i in range(9, 60, 10):
+    for i in range(4, 60, 5):
         times.append(i)
     
     while True:
