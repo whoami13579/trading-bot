@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 import time
 from typing import Any, List
 from tradingPosition import TradingPosition
+from dotenv import find_dotenv, load_dotenv
+import os
 
 
 class TradingBot:
@@ -387,6 +389,7 @@ class TradingBot:
         :return: Description
         :rtype: dict | None
         '''
+        self.load_keys()
         payload = ''
         headers = {
             "X-SECURITY-TOKEN": self.X_SECURITY_TOKEN,
@@ -479,3 +482,11 @@ class TradingBot:
             time.sleep(check_interval)
         
         print("Market is now OPEN!")
+
+    def load_keys(self):
+        load_dotenv(find_dotenv())
+        self.X_CAP_API_KEY = os.getenv("X-CAP-API-KEY", ""),
+        self.IDENTIFIER = os.getenv("identifier", ""),
+        self.PASSWORD = os.getenv("password", ""),
+        self.CST = os.getenv("CST", ""),
+        self.X_SECURITY_TOKEN = os.getenv("X_SECURITY_TOKEN", ""),
