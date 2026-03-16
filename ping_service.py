@@ -57,6 +57,7 @@ def main() -> None:
         try:
             wait_until_targets(times)
             tradingBot.pingService()
+            tradingBot.createNewSession()
         except Exception as e:
             print("#####")
             print(f"{colors.WARNING}Error in main loop: {e}{colors.ENDC}")

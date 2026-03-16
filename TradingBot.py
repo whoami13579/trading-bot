@@ -122,6 +122,7 @@ class TradingBot:
         return None
 
     def createNewSession(self) -> dict | None:
+        self.load_keys()
         payload = {"identifier": self.IDENTIFIER, "password": self.PASSWORD}
         headers = {
             "X-CAP-API-KEY": self.X_CAP_API_KEY,
