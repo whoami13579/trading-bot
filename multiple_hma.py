@@ -123,6 +123,7 @@ def main() -> None:
     while True:
         try:
             wait_until_targets(TIMES)
+            tradingBot.pingService()
 
             if DAYS == 7:
                 pass

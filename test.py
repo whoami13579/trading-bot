@@ -20,6 +20,7 @@ def main() -> None:
         os.getenv("password", ""),
         os.getenv("CST", ""),
         os.getenv("X_SECURITY_TOKEN", ""),
+        real_account=True
     )
     # result, _ = tradingBot.createPosition(SYMBOL, "SELL", 100)
     # dealReference = result["dealReference"]
@@ -36,8 +37,10 @@ def main() -> None:
     #     print(position)
 
     # tradingBot.closePosition('0015421d-0055-311e-0000-000081fa0c09')
-    results = tradingBot.getHistoricalPricesList("EURUSD", "HOUR_4", 210)
+    results, code = tradingBot.createPosition("EURUSD", "SELL", 100)
+    # results, code = tradingBot.getHistoricalPrices("EURUSD", "HOUR", 100)
     print(results)
+    print(code)
 
 
 

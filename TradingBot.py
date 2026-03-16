@@ -248,7 +248,6 @@ class TradingBot:
         profitDistance: int = 0,
         profitAmount: int = 0,
     ) -> tuple[dict, int]| None:
-        self.load_keys()
         payload = {
             "epic": epic,
             "direction": direction,
@@ -393,7 +392,7 @@ class TradingBot:
         :return: Description
         :rtype: dict | None
         '''
-        self.load_keys()
+        # self.load_keys()
         payload = ''
         headers = {
             "X-SECURITY-TOKEN": self.X_SECURITY_TOKEN,
