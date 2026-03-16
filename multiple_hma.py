@@ -4,7 +4,7 @@ from dotenv import find_dotenv, load_dotenv
 from TradingBot import TradingBot
 import time
 from datetime import datetime, timedelta
-from indicators import calculate_hma, calculate_multiple, calculate_hma_result
+from indicators import calculate_multiple, calculate_hma_result
 from colors import colors
 import argparse
 import traceback
@@ -14,7 +14,7 @@ DEFAULT_SYMBOL: str = "EURUSD"
 DEFAULT_HMA_PERIOD: int = 20  # Length of the Hull window
 DEFAULT_QUANTITY: int = 100
 DEFAULT_SLEEP_TIME: int = 60 * 30
-DEFAULT_TIMEFRAME = "MINUTE_30"
+DEFAULT_SHORT_TERM = "MINUTE_30"
 DEFAULT_LONG_TERM = "HOUR_4"
 DEFAULT_DAYS = 5
 
@@ -54,6 +54,9 @@ def wait_until_targets(target_minutes):
 
 def timeframe_to_minutes(timeframe: str) -> list[int]:
     match timeframe:
+        case "MINUTE":
+            result = [i for i in range(0, 61, 1)]
+            return result
         case "MINUTE_30":
             return [0, 30]
 
@@ -66,7 +69,7 @@ def main() -> None:
     parser.add_argument("--symbol", type=str)
     parser.add_argument("--long_term", type=str)
     parser.add_argument("--hma_period", type=str)
-    parser.add_argument("--time_frame", type=str)
+    parser.add_argument("--short_term", type=str)
     parser.add_argument("--days", type=int)
 
     args = parser.parse_args()
@@ -85,10 +88,10 @@ def main() -> None:
     else:
         HMA_PERIOD: str = DEFAULT_HMA_PERIOD
 
-    if args.time_frame:
-        TIMEFRAME: str = args.time_frame
+    if args.short_term:
+        SHORT_TERM: str = args.short_term
     else:
-        TIMEFRAME: str = DEFAULT_TIMEFRAME
+        SHORT_TERM: str = DEFAULT_SHORT_TERM
 
     if args.days:
         DAYS: str = args.days
@@ -111,7 +114,7 @@ def main() -> None:
         args.real,
     )
 
-    TIMES = timeframe_to_minutes(TIMEFRAME)
+    TIMES = timeframe_to_minutes(SHORT_TERM)
 
     long_term_result = ""
     short_term_result = ""
@@ -128,7 +131,7 @@ def main() -> None:
                     tradingBot.wait_until_open()
 
             long_term_result = calculate_multiple(tradingBot, SYMBOL, LONG_TERM)
-            short_term_result = calculate_hma_result(tradingBot, SYMBOL, TIMEFRAME, HMA_PERIOD)
+            short_term_result = calculate_hma_result(tradingBot, SYMBOL, SHORT_TERM, HMA_PERIOD)
 
             if short_term_result != long_term_result:
                 all_positions = tradingBot.getAllPositionsList()
