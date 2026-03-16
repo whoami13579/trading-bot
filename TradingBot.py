@@ -17,7 +17,6 @@ class TradingBot:
         else:
             self.BASE_URL = DEMO_BASE_URL
 
-        self.BASE_URL = "https://demo-api-capital.backend-capital.com"
         self.X_CAP_API_KEY = x_cap_api_key
         self.IDENTIFIER = identifier
         self.PASSWORD = password
