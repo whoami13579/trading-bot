@@ -404,7 +404,7 @@ class TradingBot:
         result: dict[str, Any] = self.getHistoricalPrices(
             symbol, time_frame, period
         )
-        prices: List[float] = [item["openPrice"]["ask"] for item in result["prices"]]
+        prices: List[float] = [item["closePrice"]["ask"] for item in result["prices"]]
         return prices
     
     def getClientSentimentForMarkets(self) -> dict | None:
