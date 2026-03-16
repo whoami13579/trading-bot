@@ -55,7 +55,7 @@ def wait_until_targets(target_minutes):
 def timeframe_to_minutes(timeframe: str) -> list[int]:
     match timeframe:
         case "MINUTE":
-            result = [i for i in range(0, 61, 1)]
+            result = [i for i in range(0, 60, 1)]
             return result
         case "MINUTE_30":
             return [0, 30]
