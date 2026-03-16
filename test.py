@@ -31,11 +31,13 @@ def main() -> None:
     # print(dealId)
     # print(res)
 
-    results = tradingBot.getAllPositionsList()
-    for position in results:
-        print(position)
+    # results = tradingBot.getAllPositionsList()
+    # for position in results:
+    #     print(position)
 
     # tradingBot.closePosition('0015421d-0055-311e-0000-000081fa0c09')
+    results = tradingBot.getHistoricalPricesList("EURUSD", "HOUR_4", 210)
+    print(results)
 
 
 

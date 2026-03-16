@@ -395,15 +395,17 @@ class TradingBot:
         res = requests.get(
             f"{self.BASE_URL}/api/v1/prices/{epic}?resolution={resolution}&max={max}", json=payload, headers=headers
         )
-        if res.status_code == 200:
-            return res.json()
 
-        return None
+        return res.json(), res.status_code
 
     def getHistoricalPricesList(self, symbol: str, time_frame: str, period: int) -> list[float]:
-        result: dict[str, Any] = self.getHistoricalPrices(
+        result, code = self.getHistoricalPrices(
             symbol, time_frame, period
         )
+
+        if code != 200:
+            print(result)
+
         prices: List[float] = [item["closePrice"]["ask"] for item in result["prices"]]
         return prices
     
