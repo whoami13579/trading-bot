@@ -485,8 +485,8 @@ class TradingBot:
 
     def load_keys(self):
         load_dotenv(find_dotenv())
-        self.X_CAP_API_KEY = os.getenv("X-CAP-API-KEY", ""),
-        self.IDENTIFIER = os.getenv("identifier", ""),
-        self.PASSWORD = os.getenv("password", ""),
-        self.CST = os.getenv("CST", ""),
-        self.X_SECURITY_TOKEN = os.getenv("X_SECURITY_TOKEN", ""),
+        self.X_CAP_API_KEY = os.getenv("X-CAP-API-KEY", "")
+        self.IDENTIFIER = os.getenv("identifier", "")
+        self.PASSWORD = os.getenv("password", "")
+        self.CST = os.getenv("CST", "")
+        self.X_SECURITY_TOKEN = os.getenv("X_SECURITY_TOKEN", "")
