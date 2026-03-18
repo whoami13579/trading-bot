@@ -408,6 +408,19 @@ class TradingBot:
         return res.json(), res.status_code
 
     def getHistoricalPricesList(self, symbol: str, time_frame: str, period: int) -> list[float]:
+        if time_frame == "HOUR_2":
+            result, code = self.getHistoricalPrices(
+                symbol, "HOUR", period * 2
+            )
+
+            if code != 200:
+                print(f"getHistoricalPricesList : {result}")
+                return []
+
+            prices: List[float] = [item["closePrice"]["ask"] for item in result["prices"]]
+            result = prices[1::2]
+            return prices
+
         result, code = self.getHistoricalPrices(
             symbol, time_frame, period
         )
