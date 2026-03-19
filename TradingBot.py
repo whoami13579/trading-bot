@@ -3,6 +3,8 @@ from datetime import datetime, timezone
 import time
 from typing import Any, List
 from tradingPosition import TradingPosition
+import os
+from dotenv import find_dotenv, load_dotenv, set_key
 
 
 class TradingBot:
@@ -491,3 +493,14 @@ class TradingBot:
             time.sleep(check_interval)
         
         print("Market is now OPEN!")
+    
+    def write_keys(self):
+        dotenv_path = find_dotenv()
+        if dotenv_path:
+            set_key(dotenv_path, "CST", self.cst)
+            set_key(dotenv_path, "X_SECURITY_TOKEN", self.x_security_token)
+
+    def load_keys(self):
+        load_dotenv(find_dotenv())
+        self.cst = os.getenv("CST", "")
+        self.x_security_token = os.getenv("X_SECURITY_TOKEN", "")
