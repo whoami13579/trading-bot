@@ -5,7 +5,7 @@ from dotenv import find_dotenv, load_dotenv
 from TradingBot import TradingBot
 import time
 from datetime import datetime, timedelta
-from indicators import calculate_hma
+from indicators import calculate_hma_result
 from colors import colors
 import argparse
 
@@ -13,9 +13,9 @@ import argparse
 DEFAULT_SYMBOL: str = "EURUSD"
 DEFAULT_HMA_PERIOD: int = 20  # Length of the Hull window
 DEFAULT_QUANTITY: int = 100
-DEFAULT_SLEEP_TIME: int = 60 * 30
 DEFAULT_TIMEFRAME = "MINUTE_30"
 DEFAULT_DAYS = 5
+DEFAULT_DIRECTION = "BUY"
 
 
 def wait_until_targets(target_minutes):
@@ -66,6 +66,7 @@ def main() -> None:
     parser.add_argument("--hma_period", type=str)
     parser.add_argument("--time_frame", type=str)
     parser.add_argument("--days", type=int)
+    parser.add_argument("--direction", type=str)
 
     args = parser.parse_args()
     if args.size:
@@ -93,6 +94,11 @@ def main() -> None:
     else:
         DAYS: str = DEFAULT_DAYS
 
+    if args.direction:
+        DIRECTION: str = args.direction
+    else:
+        DIRECTION: str = DEFAULT_DIRECTION
+
     # 1. Environment & Auth
     load_dotenv(find_dotenv())
     tradingBot = TradingBot(
@@ -106,17 +112,13 @@ def main() -> None:
 
     TIMES = timeframe_to_minutes(TIMEFRAME)
 
-    # 2. Pre-load sufficient history
-    # HMA needs more data than the period itself to stabilize (usually 2x-3x)
-    history_count: int = HMA_PERIOD * 3
-    prices: List[float] = None
-
     current_status: Optional[str] = None
 
     # 3. Execution Loop
     while True:
         try:
             wait_until_targets(TIMES)
+            tradingBot.pingService()
 
             if DAYS == 7:
                 pass
@@ -124,33 +126,32 @@ def main() -> None:
                 if not tradingBot.is_market_open():
                     tradingBot.wait_until_open()
 
-            # Update latest price
-            prices = tradingBot.getHistoricalPricesList(SYMBOL, TIMEFRAME, history_count)
+            result = calculate_hma_result(tradingBot, SYMBOL, TIMEFRAME, HMA_PERIOD)
 
-            # Calculate HMA Sequence
-            hma_values = calculate_hma(prices, HMA_PERIOD)
-
-            if len(hma_values) < 2:
-                print("Calculating HMA...")
-                continue
-
-            current_hma = hma_values[-1]
-            prev_hma = hma_values[-2]
-
-            print(f"Price: {prices[-1]:.5f} | HMA: {current_hma:.5f}")
-
-            # 4. Slope Logic (Trend Following)
-            if current_hma > prev_hma and current_status != "BUY":
-                print(f">>> HMA Slope UP - Entering {colors.BLUE}BUY{colors.ENDC}")
-                res, code = tradingBot.createPosition(SYMBOL, "BUY", QUANTITY)
-                if code == 200:
-                    current_status = "BUY"
-
-            elif current_hma < prev_hma and current_status != "SELL":
-                print(f">>> HMA Slope DOWN - Entering {colors.RED}SELL{colors.ENDC}")
-                res, code = tradingBot.createPosition(SYMBOL, "SELL", QUANTITY)
-                if code == 200:
-                    current_status = "SELL"
+            if result != DIRECTION:
+                all_positions = tradingBot.getAllPositionsList()
+                targets = [pos for pos in all_positions if pos.epic == SYMBOL]
+                if 0 < len(targets):
+                    for target in targets:
+                        result, code = tradingBot.closePosition(target.dealId)
+                    
+                    if code == 200:
+                        print(f">>> {colors.YELLOW}close position{colors.ENDC}")
+                    else:
+                        print(f"failed to close position ({result})")
+            elif result == DIRECTION:
+                all_positions = tradingBot.getAllPositionsList()
+                targets = [pos for pos in all_positions if pos.epic == SYMBOL]
+                if len(targets) == 0:
+                    result, code = tradingBot.createPosition(SYMBOL, result, QUANTITY)
+                    
+                    if code == 200:
+                        if result == "BUY":
+                            print(f">>> {colors.BLUE}BUY{colors.ENDC}")
+                        else:
+                            print(f">>> {colors.RED}SELL{colors.ENDC}")
+                    else:
+                        print(f"failed to create {result} position ({result})")
 
         except Exception as e:
             print(f"{colors.WARNING}Error in main loop: {e}{colors.ENDC}")

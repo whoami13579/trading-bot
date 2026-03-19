@@ -3,7 +3,7 @@ uv run hma.py
 ```
 
 ```bash
-uv run hma.py --real
+uv run hma.py --real --direction SELL --days 7
 ```
 
 ```bash
