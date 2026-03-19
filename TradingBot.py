@@ -1,15 +1,12 @@
 import requests
-from dotenv import find_dotenv, set_key
 from datetime import datetime, timezone
 import time
 from typing import Any, List
 from tradingPosition import TradingPosition
-from dotenv import find_dotenv, load_dotenv
-import os
 
 
 class TradingBot:
-    def __init__(self, x_cap_api_key: str, identifier: str, password: str, cst, x_security_token: str, real_account: bool = False):
+    def __init__(self, x_cap_api_key: str, identifier: str, password: str, real_account: bool = False):
         REAL_BASE_URL = "https://api-capital.backend-capital.com"
         DEMO_BASE_URL = "https://demo-api-capital.backend-capital.com"
         if real_account:
@@ -20,9 +17,9 @@ class TradingBot:
         self.X_CAP_API_KEY = x_cap_api_key
         self.IDENTIFIER = identifier
         self.PASSWORD = password
-        self.CST = cst
-        self.X_SECURITY_TOKEN = x_security_token
-        self.ENCRYPTIONKEY = ""
+        self.cst = ""
+        self.x_security_token = ""
+        self.encryption_key = ""
 
         self.pingService()
 
@@ -59,7 +56,7 @@ class TradingBot:
 
     def pingService(self) -> str | None:
         payload = ""
-        headers = {"X-SECURITY-TOKEN": self.X_SECURITY_TOKEN, "CST": self.CST}
+        headers = {"X-SECURITY-TOKEN": self.x_security_token, "CST": self.cst}
         res = requests.get(
             f"{self.BASE_URL}/api/v1/ping", json=payload, headers=headers
         )
@@ -70,16 +67,11 @@ class TradingBot:
         # get CST and X_SECURITY_TOKEN, then ping service again
         cstAndXSecurityToken = self.getCstAndXSecurityToken()
         if cstAndXSecurityToken:
-            self.CST = cstAndXSecurityToken[0]
-            self.X_SECURITY_TOKEN = cstAndXSecurityToken[1]
-
-            dotenv_path = find_dotenv()
-            if dotenv_path:
-                set_key(dotenv_path, "CST", self.CST)
-                set_key(dotenv_path, "X_SECURITY_TOKEN", self.X_SECURITY_TOKEN)
+            self.cst = cstAndXSecurityToken[0]
+            self.x_security_token = cstAndXSecurityToken[1]
 
         payload = ""
-        headers = {"X-SECURITY-TOKEN": self.X_SECURITY_TOKEN, "CST": self.CST}
+        headers = {"X-SECURITY-TOKEN": self.x_security_token, "CST": self.cst}
         res = requests.get(
             f"{self.BASE_URL}/api/v1/ping", json=payload, headers=headers
         )
@@ -101,10 +93,7 @@ class TradingBot:
             headers=headers,
         )
         if res.status_code == 200:
-            dotenv_path = find_dotenv()
-            if dotenv_path:
-                self.ENCRYPTIONKEY = res.json().get("encryptionKey")
-                set_key(dotenv_path, "ENCRYPTIONKEY", self.ENCRYPTIONKEY)
+            self.encryption_key = res.json().get("encryptionKey")
 
             return res.json()
 
@@ -112,7 +101,7 @@ class TradingBot:
 
     def getSessionDetails(self) -> dict | None:
         payload = ""
-        headers = {"X-SECURITY-TOKEN": self.X_SECURITY_TOKEN, "CST": self.CST}
+        headers = {"X-SECURITY-TOKEN": self.x_security_token, "CST": self.cst}
         res = requests.get(
             f"{self.BASE_URL}/api/v1/session", json=payload, headers=headers
         )
@@ -144,7 +133,7 @@ class TradingBot:
 
     def getAllAccounts(self) -> dict | None:
         payload = ""
-        headers = {"X-SECURITY-TOKEN": self.X_SECURITY_TOKEN, "CST": self.CST}
+        headers = {"X-SECURITY-TOKEN": self.x_security_token, "CST": self.cst}
         res = requests.get(
             f"{self.BASE_URL}/api/v1/accounts", json=payload, headers=headers
         )
@@ -155,7 +144,7 @@ class TradingBot:
 
     def getAccountPreferences(self) -> dict | None:
         payload = ""
-        headers = {"X-SECURITY-TOKEN": self.X_SECURITY_TOKEN, "CST": self.CST}
+        headers = {"X-SECURITY-TOKEN": self.x_security_token, "CST": self.cst}
         res = requests.get(
             f"{self.BASE_URL}/api/v1/accounts/preferences",
             json=payload,
@@ -171,7 +160,7 @@ class TradingBot:
 
     def getAccountActivityHistory(self) -> dict | None:
         payload = ""
-        headers = {"X-SECURITY-TOKEN": self.X_SECURITY_TOKEN, "CST": self.CST}
+        headers = {"X-SECURITY-TOKEN": self.x_security_token, "CST": self.cst}
         res = requests.get(
             f"{self.BASE_URL}/api/v1/history/activity",
             json=payload,
@@ -184,7 +173,7 @@ class TradingBot:
 
     def getAccountTransactionsHistory(self) -> dict | None:
         payload = ""
-        headers = {"X-SECURITY-TOKEN": self.X_SECURITY_TOKEN, "CST": self.CST}
+        headers = {"X-SECURITY-TOKEN": self.x_security_token, "CST": self.cst}
         res = requests.get(
             f"{self.BASE_URL}/api/v1/history/transactions",
             json=payload,
@@ -200,7 +189,7 @@ class TradingBot:
 
     def getPositionOrderConfirmation(self, dealReference: str) -> dict | None:
         payload = ""
-        headers = {"X-SECURITY-TOKEN": self.X_SECURITY_TOKEN, "CST": self.CST}
+        headers = {"X-SECURITY-TOKEN": self.x_security_token, "CST": self.cst}
         res = requests.get(
             f"{self.BASE_URL}/api/v1/confirms/{dealReference}",
             json=payload,
@@ -213,7 +202,7 @@ class TradingBot:
 
     def getAllPositions(self) -> dict | None:
         payload = ""
-        headers = {"X-SECURITY-TOKEN": self.X_SECURITY_TOKEN, "CST": self.CST}
+        headers = {"X-SECURITY-TOKEN": self.x_security_token, "CST": self.cst}
         res = requests.get(
             f"{self.BASE_URL}/api/v1/positions", json=payload, headers=headers
         )
@@ -257,8 +246,8 @@ class TradingBot:
             # "profitLevel": profitLevel,
         }
         headers = {
-            "X-SECURITY-TOKEN": self.X_SECURITY_TOKEN,
-            "CST": self.CST,
+            "X-SECURITY-TOKEN": self.x_security_token,
+            "CST": self.cst,
             "Content-Type": "application/json",
         }
         res = requests.post(
@@ -273,8 +262,8 @@ class TradingBot:
     def getsinglePosition(self, dealId) -> dict | None:
         payload = ''
         headers = {
-            "X-SECURITY-TOKEN": self.X_SECURITY_TOKEN,
-            "CST": self.CST,
+            "X-SECURITY-TOKEN": self.x_security_token,
+            "CST": self.cst,
         }
         res = requests.get(
             f"{self.BASE_URL}/api/v1/positions/{dealId}", json=payload, headers=headers
@@ -290,8 +279,8 @@ class TradingBot:
     def closePosition(self, dealId: str) -> dict | None:
         payload = ''
         headers = {
-        'X-SECURITY-TOKEN': self.X_SECURITY_TOKEN,
-        'CST': self.CST
+        'X-SECURITY-TOKEN': self.x_security_token,
+        'CST': self.cst
         }
         res = requests.delete(f"{self.BASE_URL}/api/v1/positions/{dealId}", json=payload, headers=headers)
 
@@ -302,8 +291,8 @@ class TradingBot:
     def getAllWorkingOrders(self) -> dict | None:
         payload = ''
         headers = {
-            "X-SECURITY-TOKEN": self.X_SECURITY_TOKEN,
-            "CST": self.CST,
+            "X-SECURITY-TOKEN": self.x_security_token,
+            "CST": self.cst,
         }
         res = requests.get(
             f"{self.BASE_URL}/api/v1/workingorders", json=payload, headers=headers
@@ -325,8 +314,8 @@ class TradingBot:
     def getAllTopLevelMarketCategories(self) -> dict | None:
         payload = ''
         headers = {
-            "X-SECURITY-TOKEN": self.X_SECURITY_TOKEN,
-            "CST": self.CST,
+            "X-SECURITY-TOKEN": self.x_security_token,
+            "CST": self.cst,
         }
         res = requests.get(
             f"{self.BASE_URL}/api/v1/marketnavigation", json=payload, headers=headers
@@ -339,8 +328,8 @@ class TradingBot:
     def getAllCategorySubNodes(self, nodeId) -> dict | None:
         payload = ''
         headers = {
-            "X-SECURITY-TOKEN": self.X_SECURITY_TOKEN,
-            "CST": self.CST,
+            "X-SECURITY-TOKEN": self.x_security_token,
+            "CST": self.cst,
         }
         res = requests.get(
             f"{self.BASE_URL}/api/v1/marketnavigation/{nodeId}", json=payload, headers=headers
@@ -353,8 +342,8 @@ class TradingBot:
     def getMarketsDetails(self, epics: str) -> dict | None:
         payload = ''
         headers = {
-            "X-SECURITY-TOKEN": self.X_SECURITY_TOKEN,
-            "CST": self.CST,
+            "X-SECURITY-TOKEN": self.x_security_token,
+            "CST": self.cst,
         }
         res = requests.get(
             f"{self.BASE_URL}/api/v1/markets?epics={epics}", json=payload, headers=headers
@@ -367,8 +356,8 @@ class TradingBot:
     def getSingleMarketDetails(self, epic: str) -> dict | None:
         payload = ''
         headers = {
-            "X-SECURITY-TOKEN": self.X_SECURITY_TOKEN,
-            "CST": self.CST,
+            "X-SECURITY-TOKEN": self.x_security_token,
+            "CST": self.cst,
         }
         res = requests.get(
             f"{self.BASE_URL}/api/v1/markets/{epic}", json=payload, headers=headers
@@ -395,8 +384,8 @@ class TradingBot:
         # self.load_keys()
         payload = ''
         headers = {
-            "X-SECURITY-TOKEN": self.X_SECURITY_TOKEN,
-            "CST": self.CST,
+            "X-SECURITY-TOKEN": self.x_security_token,
+            "CST": self.cst,
         }
         res = requests.get(
             f"{self.BASE_URL}/api/v1/prices/{epic}?resolution={resolution}&max={max}", json=payload, headers=headers
@@ -441,8 +430,8 @@ class TradingBot:
     def getAllWatchlists(self) -> dict | None:
         payload = ''
         headers = {
-            "X-SECURITY-TOKEN": self.X_SECURITY_TOKEN,
-            "CST": self.CST,
+            "X-SECURITY-TOKEN": self.x_security_token,
+            "CST": self.cst,
         }
         res = requests.get(
             f"{self.BASE_URL}/api/v1/watchlists", json=payload, headers=headers
@@ -502,11 +491,3 @@ class TradingBot:
             time.sleep(check_interval)
         
         print("Market is now OPEN!")
-
-    def load_keys(self):
-        load_dotenv(find_dotenv())
-        self.X_CAP_API_KEY = os.getenv("X-CAP-API-KEY", "")
-        self.IDENTIFIER = os.getenv("identifier", "")
-        self.PASSWORD = os.getenv("password", "")
-        self.CST = os.getenv("CST", "")
-        self.X_SECURITY_TOKEN = os.getenv("X_SECURITY_TOKEN", "")
