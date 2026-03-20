@@ -14,7 +14,7 @@ DEFAULT_SYMBOL: str = "EURUSD"
 DEFAULT_HMA_PERIOD: int = 20  # Length of the Hull window
 DEFAULT_QUANTITY: int = 100
 DEFAULT_TIMEFRAME = "MINUTE_30"
-DEFAULT_DAYS = 5
+DEFAULT_DAYS = 7
 DEFAULT_DIRECTION = "BUY"
 
 
@@ -112,13 +112,11 @@ def main() -> None:
 
     TIMES = timeframe_to_minutes(TIMEFRAME)
 
-    current_status: Optional[str] = None
-
     # 3. Execution Loop
     while True:
         try:
             wait_until_targets(TIMES)
-            tradingBot.pingService()
+            tradingBot.load_keys()
 
             if DAYS == 7:
                 pass
