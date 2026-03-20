@@ -51,7 +51,7 @@ def calculate_sma(prices, period)->float:
     return sum(prices[-period:]) / period
 
 
-def calculate_ema(prices, span, smoothing=2):
+def calculate_ema(prices, span, smoothing=2)->list[float]:
     if len(prices) < span:
         return "Not enough data"
     
@@ -60,7 +60,7 @@ def calculate_ema(prices, span, smoothing=2):
     
     # Start with the SMA for the first EMA value
     ema = sum(prices[:span]) / span
-    ema_values = [None] * (span - 1) + [ema]
+    ema_values: list = [None] * (span - 1) + [ema]
     
     # Calculate EMA for the remaining prices
     for price in prices[span:]:
@@ -102,7 +102,7 @@ def calculate_multiple(tradingBot: TradingBot, symbol: str, time_frame: str)->st
     else:
         return "Neutral"
 
-def calculate_hma_result(tradingBot: TradingBot, symbol: str, time_frame: str, hma_period: str)->str:
+def calculate_hma_result(tradingBot: TradingBot, symbol: str, time_frame: str, hma_period: int)->str:
     prices = tradingBot.getHistoricalPricesList(symbol, time_frame, hma_period * 3)
     hma_values = calculate_hma(prices, hma_period)
     
@@ -110,4 +110,16 @@ def calculate_hma_result(tradingBot: TradingBot, symbol: str, time_frame: str, h
         return "BUY"
     else:
         return "SELL"
-    
+
+def calculate_two_ema_result(tradingBot: TradingBot, symbol: str, time_frame: str, long_period: int, short_period: int)->str:
+    prices = tradingBot.getHistoricalPricesList(symbol, time_frame, long_period)
+    long_period_ema_values = calculate_ema(prices, long_period)
+    short_period_ema_values = calculate_ema(prices, short_period)
+
+    long_period_ema = long_period_ema_values[-1]
+    short_period_ema = short_period_ema_values[-1]
+
+    if short_period_ema < long_period_ema:
+        return "SELL"
+    else:
+        return "BUY"
