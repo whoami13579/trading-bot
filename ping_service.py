@@ -45,8 +45,6 @@ def main() -> None:
         os.getenv("X-CAP-API-KEY", ""),
         os.getenv("identifier", ""),
         os.getenv("password", ""),
-        os.getenv("CST", ""),
-        os.getenv("X_SECURITY_TOKEN", ""),
     )
 
     times = []
@@ -57,7 +55,7 @@ def main() -> None:
         try:
             wait_until_targets(times)
             tradingBot.pingService()
-            # tradingBot.createNewSession()
+            tradingBot.write_keys()
         except Exception as e:
             print("#####")
             print(f"{colors.WARNING}Error in main loop: {e}{colors.ENDC}")

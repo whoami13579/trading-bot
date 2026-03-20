@@ -109,8 +109,6 @@ def main() -> None:
         os.getenv("X-CAP-API-KEY", ""),
         os.getenv("identifier", ""),
         os.getenv("password", ""),
-        os.getenv("CST", ""),
-        os.getenv("X_SECURITY_TOKEN", ""),
         args.real,
     )
 
@@ -123,7 +121,7 @@ def main() -> None:
     while True:
         try:
             wait_until_targets(TIMES)
-            tradingBot.pingService()
+            tradingBot.load_keys()
 
             if DAYS == 7:
                 pass
