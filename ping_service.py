@@ -1,6 +1,6 @@
 import os
 from dotenv import find_dotenv, load_dotenv
-from TradingBot import TradingBot
+from TradingApi import TradingApi
 from colors import colors
 from scheduler import wait_until_targets
 
@@ -8,7 +8,7 @@ from scheduler import wait_until_targets
 def main() -> None:
     # 1. Environment & Auth
     load_dotenv(find_dotenv())
-    tradingBot = TradingBot(
+    tradingApi = TradingApi(
         os.getenv("X-CAP-API-KEY", ""),
         os.getenv("identifier", ""),
         os.getenv("password", ""),
@@ -21,8 +21,8 @@ def main() -> None:
     while True:
         try:
             wait_until_targets(times)
-            tradingBot.pingService()
-            tradingBot.write_keys()
+            tradingApi.pingService()
+            tradingApi.write_keys()
         except Exception as e:
             print("#####")
             print(f"{colors.WARNING}Error in main loop: {e}{colors.ENDC}")

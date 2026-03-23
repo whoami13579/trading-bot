@@ -3,7 +3,7 @@ import time
 import math
 from typing import List, Optional, Dict, Any
 from dotenv import find_dotenv, load_dotenv
-from TradingBot import TradingBot
+from TradingApi import TradingApi
 
 # --- Configuration ---
 SYMBOL: str = "EURUSD"
@@ -89,7 +89,7 @@ HOUR_4:       -0.02999999999999947
 '''
 
 class TestStrategy:
-    def __init__(self, tb: TradingBot):
+    def __init__(self, tb: TradingApi):
         self.price = 0
         self.balance = 0
         result: Dict[str, Any] = tb.getHistoricalPrices(SYMBOL, TIME, 1000)
@@ -164,7 +164,7 @@ def calculate_hma(prices: List[float], period: int) -> List[float]:
 def main() -> None:
     # 1. Environment & Auth
     load_dotenv(find_dotenv())
-    tradingBot = TradingBot(
+    tradingApi = TradingApi(
         os.getenv('X-CAP-API-KEY', ''),
         os.getenv("identifier", ''),
         os.getenv("password", ''),
@@ -172,14 +172,14 @@ def main() -> None:
         os.getenv('X_SECURITY_TOKEN', '')
     )
 
-    ts = TestStrategy(tradingBot)
+    ts = TestStrategy(tradingApi)
 
     # 2. Pre-load sufficient history
     # HMA needs more data than the period itself to stabilize (usually 2x-3x)
     history_count: int = HMA_PERIOD * 3
     print(f"Fetching {history_count} candles for HMA warmup...")
     
-    # result: Dict[str, Any] = tradingBot.getHistoricalPrices(SYMBOL, "MINUTE", history_count)
+    # result: Dict[str, Any] = tradingApi.getHistoricalPrices(SYMBOL, "MINUTE", history_count)
     # prices: List[float] = [item['openPrice']['ask'] for item in result['prices']]
     prices = ts.get_price(history_count)
     
@@ -189,7 +189,7 @@ def main() -> None:
     while True:
         try:
             # Update latest price
-            # latest_res: Dict[str, Any] = tradingBot.getHistoricalPrices(SYMBOL, "MINUTE", 1)
+            # latest_res: Dict[str, Any] = tradingApi.getHistoricalPrices(SYMBOL, "MINUTE", 1)
             # new_price: float = latest_res['prices'][0]['openPrice']['ask']
             new_price = ts.get_price(1)
             if new_price is None:

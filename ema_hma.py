@@ -1,6 +1,6 @@
 import os
 from dotenv import find_dotenv, load_dotenv
-from TradingBot import TradingBot
+from TradingApi import TradingApi
 from indicators import calculate_hma_result, calculate_two_ema_result
 from colors import colors
 import argparse
@@ -66,7 +66,7 @@ def main() -> None:
 
     # 1. Environment & Auth
     load_dotenv(find_dotenv())
-    tradingBot = TradingBot(
+    tradingApi = TradingApi(
         os.getenv("X-CAP-API-KEY", ""),
         os.getenv("identifier", ""),
         os.getenv("password", ""),
@@ -82,34 +82,35 @@ def main() -> None:
     while True:
         try:
             wait_until_targets(TIMES)
-            tradingBot.load_keys()
+            tradingApi.load_keys()
 
             if DAYS == 7:
                 pass
             elif DAYS == 5:
-                if not tradingBot.is_market_open():
-                    tradingBot.wait_until_open()
+                if not tradingApi.is_market_open():
+                    tradingApi.wait_until_open()
 
-            ema_result = calculate_two_ema_result(tradingBot, SYMBOL, TIME_FRAME, LONG_PERIOD, SHORT_PERIOD)
+            ema_result = calculate_two_ema_result(tradingApi, SYMBOL, TIME_FRAME, LONG_PERIOD, SHORT_PERIOD)
             print(f"{colors.YELLOW}ema_result: {ema_result}{colors.ENDC}")
-            hma_result = calculate_hma_result(tradingBot, SYMBOL, TIME_FRAME, HMA_PERIOD)
+            hma_result = calculate_hma_result(tradingApi, SYMBOL, TIME_FRAME, HMA_PERIOD)
+            print(f"{colors.YELLOW}hma_result: {hma_result}{colors.ENDC}")
 
             if hma_result != ema_result:
-                all_positions = tradingBot.getAllPositionsList()
+                all_positions = tradingApi.getAllPositionsList()
                 targets = [pos for pos in all_positions if pos.epic == SYMBOL]
                 if 0 < len(targets):
                     for target in targets:
-                        result, code = tradingBot.closePosition(target.dealId)
+                        result, code = tradingApi.closePosition(target.dealId)
                     
                     if code == 200:
                         print(f">>> {colors.YELLOW}close position{colors.ENDC}")
                     else:
                         print(f"failed to close position ({result})")
             elif hma_result == ema_result:
-                all_positions = tradingBot.getAllPositionsList()
+                all_positions = tradingApi.getAllPositionsList()
                 targets = [pos for pos in all_positions if pos.epic == SYMBOL]
                 if len(targets) == 0:
-                    result, code = tradingBot.createPosition(SYMBOL, hma_result, QUANTITY)
+                    result, code = tradingApi.createPosition(SYMBOL, hma_result, QUANTITY)
                     
                     if code == 200:
                         if hma_result == "BUY":

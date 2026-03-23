@@ -7,7 +7,7 @@ import os
 from dotenv import find_dotenv, load_dotenv, set_key
 
 
-class TradingBot:
+class TradingApi:
     def __init__(self, x_cap_api_key: str, identifier: str, password: str, real_account: bool = False):
         REAL_BASE_URL = "https://api-capital.backend-capital.com"
         DEMO_BASE_URL = "https://demo-api-capital.backend-capital.com"

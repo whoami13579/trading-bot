@@ -1,6 +1,6 @@
 import os
 from dotenv import find_dotenv, load_dotenv
-from TradingBot import TradingBot
+from TradingApi import TradingApi
 from indicators import calculate_hma, calculate_sma
 import json
 
@@ -14,7 +14,7 @@ TIMEFRAME = "MINUTE_30"
 def main() -> None:
     # 1. Environment & Auth
     load_dotenv(find_dotenv())
-    tradingBot = TradingBot(
+    tradingApi = TradingApi(
         os.getenv("X-CAP-API-KEY", ""),
         os.getenv("identifier", ""),
         os.getenv("password", ""),
@@ -22,23 +22,23 @@ def main() -> None:
         os.getenv("X_SECURITY_TOKEN", ""),
         real_account=True
     )
-    # result, _ = tradingBot.createPosition(SYMBOL, "SELL", 100)
+    # result, _ = tradingApi.createPosition(SYMBOL, "SELL", 100)
     # dealReference = result["dealReference"]
-    # result = tradingBot.getPositionOrderConfirmation(dealReference)
+    # result = tradingApi.getPositionOrderConfirmation(dealReference)
     # dealId = result["affectedDeals"][0]["dealId"]
     # time.sleep(5)
-    # res = tradingBot.closePosition(dealId)
+    # res = tradingApi.closePosition(dealId)
 
     # print(dealId)
     # print(res)
 
-    # results = tradingBot.getAllPositionsList()
+    # results = tradingApi.getAllPositionsList()
     # for position in results:
     #     print(position)
 
-    # tradingBot.closePosition('0015421d-0055-311e-0000-000081fa0c09')
-    results, code = tradingBot.createPosition("EURUSD", "SELL", 100)
-    # results, code = tradingBot.getHistoricalPrices("EURUSD", "HOUR", 100)
+    # tradingApi.closePosition('0015421d-0055-311e-0000-000081fa0c09')
+    results, code = tradingApi.createPosition("EURUSD", "SELL", 100)
+    # results, code = tradingApi.getHistoricalPrices("EURUSD", "HOUR", 100)
     print(results)
     print(code)
 

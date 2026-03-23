@@ -1,5 +1,5 @@
 import math
-from TradingBot import TradingBot
+from TradingApi import TradingApi
 from typing import Any, List
 
 def calculate_wma(prices: list[float], period: int) -> float:
@@ -69,9 +69,9 @@ def calculate_ema(prices, span, smoothing=2)->list[float]:
         
     return ema_values
 
-def calculate_multiple(tradingBot: TradingBot, symbol: str, time_frame: str)->str:
+def calculate_multiple(tradingApi: TradingApi, symbol: str, time_frame: str)->str:
     buy_or_sell = 0
-    prices = tradingBot.getHistoricalPricesList(symbol, time_frame, 210)
+    prices = tradingApi.getHistoricalPricesList(symbol, time_frame, 210)
     periods = [10, 20, 30, 50, 100, 200]
     
     for period in periods:
@@ -102,8 +102,8 @@ def calculate_multiple(tradingBot: TradingBot, symbol: str, time_frame: str)->st
     else:
         return "Neutral"
 
-def calculate_hma_result(tradingBot: TradingBot, symbol: str, time_frame: str, hma_period: int)->str:
-    prices = tradingBot.getHistoricalPricesList(symbol, time_frame, hma_period * 3)
+def calculate_hma_result(tradingApi: TradingApi, symbol: str, time_frame: str, hma_period: int)->str:
+    prices = tradingApi.getHistoricalPricesList(symbol, time_frame, hma_period * 3)
     hma_values = calculate_hma(prices, hma_period)
     
     if hma_values[-2] < hma_values[-1]:
@@ -111,8 +111,8 @@ def calculate_hma_result(tradingBot: TradingBot, symbol: str, time_frame: str, h
     else:
         return "SELL"
 
-def calculate_two_ema_result(tradingBot: TradingBot, symbol: str, time_frame: str, long_period: int, short_period: int)->str:
-    prices = tradingBot.getHistoricalPricesList(symbol, time_frame, long_period)
+def calculate_two_ema_result(tradingApi: TradingApi, symbol: str, time_frame: str, long_period: int, short_period: int)->str:
+    prices = tradingApi.getHistoricalPricesList(symbol, time_frame, long_period)
     long_period_ema_values = calculate_ema(prices, long_period)
     short_period_ema_values = calculate_ema(prices, short_period)
 

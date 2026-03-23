@@ -2,7 +2,7 @@ import os
 import time
 from typing import List, Optional, Dict, Any
 from dotenv import find_dotenv, load_dotenv
-from TradingBot import TradingBot
+from TradingApi import TradingApi
 import time
 from datetime import datetime, timedelta
 from indicators import calculate_hma_result
@@ -62,7 +62,7 @@ def main() -> None:
 
     # 1. Environment & Auth
     load_dotenv(find_dotenv())
-    tradingBot = TradingBot(
+    tradingApi = TradingApi(
         os.getenv("X-CAP-API-KEY", ""),
         os.getenv("identifier", ""),
         os.getenv("password", ""),
@@ -75,22 +75,22 @@ def main() -> None:
     while True:
         try:
             wait_until_targets(TIMES)
-            tradingBot.load_keys()
+            tradingApi.load_keys()
 
             if DAYS == 7:
                 pass
             elif DAYS == 5:
-                if not tradingBot.is_market_open():
-                    tradingBot.wait_until_open()
+                if not tradingApi.is_market_open():
+                    tradingApi.wait_until_open()
 
-            result = calculate_hma_result(tradingBot, SYMBOL, TIMEFRAME, HMA_PERIOD)
+            result = calculate_hma_result(tradingApi, SYMBOL, TIMEFRAME, HMA_PERIOD)
 
             if result != DIRECTION:
-                all_positions = tradingBot.getAllPositionsList()
+                all_positions = tradingApi.getAllPositionsList()
                 targets = [pos for pos in all_positions if pos.epic == SYMBOL]
                 if 0 < len(targets):
                     for target in targets:
-                        result, code = tradingBot.closePosition(target.dealId)
+                        result, code = tradingApi.closePosition(target.dealId)
                         if code != 200:
                             print(f"failed to close position ({result})")
                     
@@ -99,10 +99,10 @@ def main() -> None:
                     else:
                         print(f"failed to close position ({result})")
             elif result == DIRECTION:
-                all_positions = tradingBot.getAllPositionsList()
+                all_positions = tradingApi.getAllPositionsList()
                 targets = [pos for pos in all_positions if pos.epic == SYMBOL]
                 if len(targets) == 0:
-                    result, code = tradingBot.createPosition(SYMBOL, result, QUANTITY)
+                    result, code = tradingApi.createPosition(SYMBOL, result, QUANTITY)
                     
                     if code == 200:
                         if result == "BUY":
