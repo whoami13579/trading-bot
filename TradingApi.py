@@ -406,6 +406,9 @@ class TradingApi:
 
             if code != 200:
                 print(f"getHistoricalPricesList : {result}")
+                print(f"symbol: {symbol}")
+                print(f"time_frame: {time_frame}")
+                print(f"period: {period}")
                 return []
 
             prices: List[float] = [item["closePrice"]["ask"] for item in result["prices"]]

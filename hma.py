@@ -1,10 +1,6 @@
 import os
-import time
-from typing import List, Optional, Dict, Any
 from dotenv import find_dotenv, load_dotenv
 from TradingApi import TradingApi
-import time
-from datetime import datetime, timedelta
 from indicators import calculate_hma_result
 from colors import colors
 import argparse

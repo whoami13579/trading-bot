@@ -4,6 +4,8 @@ uv run hma.py
 
 ```bash
 uv run hma.py --real --direction SELL --days 7
+uv run hma.py --real --hma_period 16 --time_frame MINUTE_5 --direction SELL
+uv run hma.py --real --hma_period 16 --time_frame MINUTE_5 --direction SELL --symbol AUDUSD
 ```
 
 ```bash
