@@ -79,9 +79,9 @@ def main() -> None:
                 if not tradingApi.is_market_open():
                     tradingApi.wait_until_open()
 
-            result = calculate_hma_result(tradingApi, SYMBOL, TIMEFRAME, HMA_PERIOD)
+            hma_result = calculate_hma_result(tradingApi, SYMBOL, TIMEFRAME, HMA_PERIOD)
 
-            if result != DIRECTION:
+            if hma_result != DIRECTION:
                 all_positions = tradingApi.getAllPositionsList()
                 targets = [pos for pos in all_positions if pos.epic == SYMBOL]
                 if 0 < len(targets):
@@ -94,11 +94,11 @@ def main() -> None:
                         print(f">>> {colors.YELLOW}close position{colors.ENDC}")
                     else:
                         print(f"failed to close position ({result})")
-            elif result == DIRECTION:
+            elif hma_result == DIRECTION:
                 all_positions = tradingApi.getAllPositionsList()
                 targets = [pos for pos in all_positions if pos.epic == SYMBOL]
                 if len(targets) == 0:
-                    result, code = tradingApi.createPosition(SYMBOL, result, QUANTITY)
+                    result, code = tradingApi.createPosition(SYMBOL, hma_result, QUANTITY)
                     
                     if code == 200:
                         if result == "BUY":
@@ -106,7 +106,7 @@ def main() -> None:
                         else:
                             print(f">>> {colors.RED}SELL{colors.ENDC}")
                     else:
-                        print(f"failed to create {result} position ({result})")
+                        print(f"failed to create {hma_result} position ({result})")
 
         except Exception as e:
             print(f"{colors.WARNING}Error in main loop: {e}{colors.ENDC}")
