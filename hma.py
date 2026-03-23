@@ -20,7 +20,7 @@ def main() -> None:
     parser.add_argument("--real", action="store_true")
     parser.add_argument("--size", type=float)
     parser.add_argument("--symbol", type=str)
-    parser.add_argument("--hma_period", type=str)
+    parser.add_argument("--hma_period", type=int)
     parser.add_argument("--time_frame", type=str)
     parser.add_argument("--days", type=int)
     parser.add_argument("--direction", type=str)
@@ -37,9 +37,9 @@ def main() -> None:
         SYMBOL: str = DEFAULT_SYMBOL
     
     if args.hma_period:
-        HMA_PERIOD: str = args.hma_period
+        HMA_PERIOD: int = args.hma_period
     else:
-        HMA_PERIOD: str = DEFAULT_HMA_PERIOD
+        HMA_PERIOD: int = DEFAULT_HMA_PERIOD
 
     if args.time_frame:
         TIMEFRAME: str = args.time_frame

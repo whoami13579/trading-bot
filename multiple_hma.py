@@ -28,7 +28,7 @@ def main() -> None:
     parser.add_argument("--size", type=float)
     parser.add_argument("--symbol", type=str)
     parser.add_argument("--long_term", type=str)
-    parser.add_argument("--hma_period", type=str)
+    parser.add_argument("--hma_period", type=int)
     parser.add_argument("--short_term", type=str)
     parser.add_argument("--days", type=int)
 
@@ -44,9 +44,9 @@ def main() -> None:
         SYMBOL: str = DEFAULT_SYMBOL
     
     if args.hma_period:
-        HMA_PERIOD: str = args.hma_period
+        HMA_PERIOD: int = args.hma_period
     else:
-        HMA_PERIOD: str = DEFAULT_HMA_PERIOD
+        HMA_PERIOD: int = DEFAULT_HMA_PERIOD
 
     if args.short_term:
         SHORT_TERM: str = args.short_term
