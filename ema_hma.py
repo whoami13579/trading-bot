@@ -91,6 +91,7 @@ def main() -> None:
                     tradingBot.wait_until_open()
 
             ema_result = calculate_two_ema_result(tradingBot, SYMBOL, TIME_FRAME, LONG_PERIOD, SHORT_PERIOD)
+            print(f"{colors.YELLOW}ema_result: {ema_result}{colors.ENDC}")
             hma_result = calculate_hma_result(tradingBot, SYMBOL, TIME_FRAME, HMA_PERIOD)
 
             if hma_result != ema_result:
