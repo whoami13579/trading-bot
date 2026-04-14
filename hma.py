@@ -8,7 +8,7 @@ from scheduler import wait_until_targets, timeframe_to_minutes
 
 # --- Configuration ---
 DEFAULT_SYMBOL: str = "EURUSD"
-DEFAULT_HMA_PERIOD: int = 20  # Length of the Hull window
+DEFAULT_HMA_PERIOD: int = 16  # Length of the Hull window
 DEFAULT_QUANTITY: int = 100
 DEFAULT_TIMEFRAME = "MINUTE_30"
 DEFAULT_DAYS = 7

@@ -42,5 +42,8 @@ def timeframe_to_minutes(timeframe: str) -> list[int]:
         case "MINUTE_5":
             result = [i for i in range(0, 60, 5)]
             return result
+        case "MINUTE_15":
+            result = [i for i in range(0, 60, 15)]
+            return result
         case "MINUTE_30":
             return [0, 30]
