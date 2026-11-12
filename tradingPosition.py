@@ -1,7 +1,7 @@
-class TradingPosition:
-    def __init__(self, epic: str, dealId: str):
-        self.epic = epic
-        self.dealId = dealId
+"""Compatibility import for trading_bot.api.models."""
 
-    def __repr__(self):
-        return f"TradingPosition(epic='{self.epic}', dealId='{self.dealId}')"
+from importlib import import_module
+import sys
+
+_module = import_module("trading_bot.api.models")
+sys.modules[__name__] = _module

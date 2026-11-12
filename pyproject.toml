@@ -1,11 +1,33 @@
 [project]
 name = "trading-bot"
 version = "0.1.0"
-description = "Add your description here"
+description = "Capital.com trading strategies, guarded integration tools, and offline backtesting"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "pycryptodome>=3.23.0",
     "python-dotenv>=1.2.1",
     "requests>=2.32.5",
 ]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+trading-bot-sma = "trading_bot.strategies.sma:main"
+trading-bot-hma = "trading_bot.strategies.hma:main"
+trading-bot-ema-hma = "trading_bot.strategies.ema_hma:main"
+trading-bot-multiple-hma = "trading_bot.strategies.multiple_hma:main"
+trading-bot-moving-average = "trading_bot.strategies.moving_average:main"
+trading-bot-backtest = "trading_bot.tools.backtest:main"
+trading-bot-demo-readonly = "trading_bot.tools.demo_readonly:main"
+trading-bot-diagnose-demo-auth = "trading_bot.tools.diagnose_demo_auth:main"
+trading-bot-demo-roundtrip = "trading_bot.tools.demo_roundtrip:main"
+trading-bot-live-preflight = "trading_bot.tools.live_preflight:main"
+trading-bot-ping = "trading_bot.tools.ping_service:main"
+trading-bot-check-environment = "trading_bot.tools.check_environment:main"
+trading-bot-check-offline = "trading_bot.tools.check_offline:main"

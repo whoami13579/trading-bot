@@ -1,0 +1,9 @@
+include README.md pyproject.toml uv.lock .python-version .gitignore .env.example
+include live_fee_profile.example.json
+include TradingApi.py tradingPosition.py colors.py scheduler.py indicators.py
+include main.py sma.py hma.py ema_hma.py multiple_hma.py ping_service.py
+include test.py test_api_key.py test_live_api.py test_strategy.py
+recursive-include scripts *.py
+recursive-include docs *.md
+recursive-include tests *.py
+include tests/fixtures/eurusd_ecb_daily.json
