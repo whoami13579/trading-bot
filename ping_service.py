@@ -1,6 +1,5 @@
-import os
-from dotenv import find_dotenv, load_dotenv
 from TradingApi import TradingApi
+from scripts.trading_config import add_environment_arguments, create_trading_api
 from colors import colors
 from scheduler import wait_until_targets
 import argparse
@@ -8,17 +7,11 @@ import argparse
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--real", action="store_true")
+    add_environment_arguments(parser)
 
     args = parser.parse_args()
     # 1. Environment & Auth
-    load_dotenv(find_dotenv())
-    tradingApi = TradingApi(
-        os.getenv("X-CAP-API-KEY", ""),
-        os.getenv("identifier", ""),
-        os.getenv("password", ""),
-        args.real,
-    )
+    tradingApi = create_trading_api(args, order_execution=False)
 
     times = []
     for i in range(4, 60, 5):

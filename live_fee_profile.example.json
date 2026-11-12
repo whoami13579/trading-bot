@@ -1,0 +1,15 @@
+{
+  "verified_for_this_account": false,
+  "account_fingerprint": "copy_from_private_live_preflight_report",
+  "currency": "your_live_account_currency",
+  "legal_entity": "verify_from_your_account_agreement",
+  "client_classification": "verify_retail_professional_or_wholesale",
+  "instrument": "EURUSD",
+  "commission_per_side": null,
+  "other_transaction_charges_roundtrip": null,
+  "conversion_fee_percent": null,
+  "strategy_holding_costs_verified": false,
+  "strategy_funding_allowance_usd": null,
+  "reviewed_at": "YYYY-MM-DD",
+  "source_url": "https://capital.com/your-account-entity-pricing-source"
+}

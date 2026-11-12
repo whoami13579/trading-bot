@@ -1,7 +1,7 @@
-import os
+import argparse
 import time
-from dotenv import find_dotenv, load_dotenv
 from TradingApi import TradingApi
+from scripts.trading_config import add_trading_arguments, create_trading_api
 
 # Configuration Constants
 SYMBOL = "EURUSD"
@@ -10,10 +10,10 @@ SLOW_PERIOD = 21
 QUANTITY = 100
 SLEEP_TIME = 60
 
-def get_buffer_prices(tradingApi, count):
+def get_buffer_prices(tradingApi, count, symbol=SYMBOL):
     """Fetches initial historical data to populate the moving averages."""
     try:
-        result = tradingApi.getHistoricalPrices(SYMBOL, "MINUTE", count)
+        result, _ = tradingApi.getHistoricalPrices(symbol, "MINUTE", count)
         return [item['openPrice']['ask'] for item in result['prices']]
     except Exception as e:
         print(f"Error initializing prices: {e}")
@@ -24,19 +24,16 @@ def calculate_sma(prices, period):
     return sum(prices[-period:]) / period
 
 def main():
+    parser = argparse.ArgumentParser()
+    add_trading_arguments(parser)
+    args = parser.parse_args()
+    SYMBOL, QUANTITY = args.symbol, args.size
     # 1. Environment Setup
-    load_dotenv(find_dotenv())
-    tradingApi = TradingApi(
-        os.getenv('X-CAP-API-KEY'),
-        os.getenv("identifier"),
-        os.getenv("password"),
-        os.getenv('CST'),
-        os.getenv('X_SECURITY_TOKEN')
-    )
+    tradingApi = create_trading_api(args, symbol=SYMBOL, size=QUANTITY)
 
     # 2. Initial Data Load
     # We need at least SLOW_PERIOD prices to start calculating averages
-    prices = get_buffer_prices(tradingApi, SLOW_PERIOD)
+    prices = get_buffer_prices(tradingApi, SLOW_PERIOD, SYMBOL)
     current_status = None # Tracks if we are currently "BUY" or "SELL"
 
     print(f"Bot Started. Initial Prices: {prices[-5:]}")
@@ -45,7 +42,7 @@ def main():
     while True:
         try:
             # Fetch latest single price
-            result = tradingApi.getHistoricalPrices(SYMBOL, "MINUTE", 1)
+            result, _ = tradingApi.getHistoricalPrices(SYMBOL, "MINUTE", 1)
             new_price = result['prices'][0]['openPrice']['ask']
             
             # Update price list (Rolling window)

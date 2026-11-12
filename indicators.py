@@ -2,8 +2,13 @@ import math
 from TradingApi import TradingApi
 from typing import Any, List
 
+def _validate_period(period: int, minimum: int = 1) -> None:
+    if not isinstance(period, int) or isinstance(period, bool) or period < minimum:
+        raise ValueError(f"Period must be an integer of at least {minimum}")
+
 def calculate_wma(prices: list[float], period: int) -> float:
     """Calculates the Weighted Moving Average (WMA)."""
+    _validate_period(period)
     if len(prices) < period:
         return 0.0
 
@@ -17,6 +22,7 @@ def calculate_hma(prices: list[float], period: int) -> list[float]:
     Calculates the Hull Moving Average sequence.
     Formula: WMA(2*WMA(n/2) - WMA(n), sqrt(n))
     """
+    _validate_period(period, minimum=2)
     half_period = period // 2
     sqrt_period = int(math.sqrt(period))
 
@@ -48,12 +54,16 @@ def calculate_hma(prices: list[float], period: int) -> list[float]:
 
 def calculate_sma(prices, period)->float:
     """Calculates Simple Moving Average for a specific window."""
+    _validate_period(period)
+    if len(prices) < period:
+        raise ValueError("Not enough history for SMA")
     return sum(prices[-period:]) / period
 
 
 def calculate_ema(prices, span, smoothing=2)->list[float]:
+    _validate_period(span)
     if len(prices) < span:
-        return "Not enough data"
+        raise ValueError("Not enough history for EMA")
     
     # Calculate the multiplier
     multiplier = smoothing / (1 + span)
@@ -73,6 +83,8 @@ def calculate_multiple(tradingApi: TradingApi, symbol: str, time_frame: str)->st
     buy_or_sell = 0
     prices = tradingApi.getHistoricalPricesList(symbol, time_frame, 210)
     periods = [10, 20, 30, 50, 100, 200]
+    if len(prices) < max(periods):
+        raise ValueError("Not enough history for the multiple-indicator signal")
     
     for period in periods:
         sma_value = calculate_sma(prices, period)
@@ -90,6 +102,8 @@ def calculate_multiple(tradingApi: TradingApi, symbol: str, time_frame: str)->st
 
     hma_period = 9 * 3
     hma_values = calculate_hma(prices, hma_period)
+    if len(hma_values) < 2:
+        raise ValueError("Not enough history for an HMA slope signal")
     if hma_values[-2] < hma_values[-1]:
         buy_or_sell += 1
     else:
@@ -105,6 +119,8 @@ def calculate_multiple(tradingApi: TradingApi, symbol: str, time_frame: str)->st
 def calculate_hma_result(tradingApi: TradingApi, symbol: str, time_frame: str, hma_period: int)->str:
     prices = tradingApi.getHistoricalPricesList(symbol, time_frame, hma_period * 3)
     hma_values = calculate_hma(prices, hma_period)
+    if len(hma_values) < 2:
+        raise ValueError("Not enough history for an HMA slope signal")
     
     if hma_values[-2] < hma_values[-1]:
         return "BUY"

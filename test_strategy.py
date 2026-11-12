@@ -1,9 +1,9 @@
-import os
+import argparse
 import time
 import math
 from typing import List, Optional, Dict, Any
-from dotenv import find_dotenv, load_dotenv
 from TradingApi import TradingApi
+from scripts.trading_config import add_environment_arguments, create_trading_api
 
 # --- Configuration ---
 SYMBOL: str = "EURUSD"
@@ -92,7 +92,7 @@ class TestStrategy:
     def __init__(self, tb: TradingApi):
         self.price = 0
         self.balance = 0
-        result: Dict[str, Any] = tb.getHistoricalPrices(SYMBOL, TIME, 1000)
+        result, _ = tb.getHistoricalPrices(SYMBOL, TIME, 1000)
         self.all_prices: List[float] = [item['openPrice']['ask'] for item in result['prices']]
 
     def buy(self, price):
@@ -162,15 +162,11 @@ def calculate_hma(prices: List[float], period: int) -> List[float]:
     return final_hma
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    add_environment_arguments(parser)
+    args = parser.parse_args()
     # 1. Environment & Auth
-    load_dotenv(find_dotenv())
-    tradingApi = TradingApi(
-        os.getenv('X-CAP-API-KEY', ''),
-        os.getenv("identifier", ''),
-        os.getenv("password", ''),
-        os.getenv('CST', ''),
-        os.getenv('X_SECURITY_TOKEN', '')
-    )
+    tradingApi = create_trading_api(args, order_execution=False)
 
     ts = TestStrategy(tradingApi)
 

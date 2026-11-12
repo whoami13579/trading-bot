@@ -11,6 +11,24 @@ wheels/
 
 # Environment variables
 .env
+.env.*
+!.env.example
+.demo-integration/
+.live-integration/
+
+# Local validation outputs and implementation reports
+/DEMO_API_RESULTS.json
+/DEMO_ENCRYPTION_KEY_RESULTS.json
+/DEMO_INDEPENDENT_SESSION_RESULTS.json
+/DEMO_INTEGRATION_RESULTS.json
+/DEMO_SESSION_AFTER_ACCOUNT_CREATION_RESULTS.json
+/DEMO_TRADE_TEST_RESULTS.json
+/DEMO_TEST_REPORT.md
+/LIVE_TEST_REPORT.md
+/SETUP_REPORT.md
+/NETWORK_DIAGNOSIS.md
+/DEMO_RECONCILIATION_REVIEW.md
+/WORKTREE_AUDIT_REPORT.md
 
 test.txt
 test.json

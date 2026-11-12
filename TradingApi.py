@@ -3,18 +3,35 @@ from datetime import datetime, timezone
 import time
 from typing import Any, List
 from tradingPosition import TradingPosition
-import os
-from dotenv import find_dotenv, load_dotenv, set_key
+import hashlib
+from scripts.trading_config import endpoint, load_credentials
+from scripts.network_errors import REQUEST_TIMEOUT, TradingUnavailable, network_failure_reason
+from urllib.parse import urlsplit
 
 
 class TradingApi:
-    def __init__(self, x_cap_api_key: str, identifier: str, password: str, real_account: bool = False):
-        REAL_BASE_URL = "https://api-capital.backend-capital.com"
-        DEMO_BASE_URL = "https://demo-api-capital.backend-capital.com"
-        if real_account:
-            self.BASE_URL = REAL_BASE_URL
-        else:
-            self.BASE_URL = DEMO_BASE_URL
+    def __init__(self, x_cap_api_key: str | None = None, identifier: str | None = None,
+                 password: str | None = None, real_account: bool | None = None, *,
+                 auto_authenticate: bool = True, environment: str | None = None,
+                 account: str | None = None):
+        selected = environment if environment is not None else ("live" if real_account else "demo")
+        endpoint(selected)  # Validate before loading credentials or contacting an API.
+        if real_account is not None and real_account != (selected == "live"):
+            raise ValueError("conflicting_environment_selection")
+        self._environment = selected
+        self._account_selection = account
+        self._login_has_active_environment = False
+        self._login_account_id = None
+        self._live_execution = None  # Authentication alone never authorizes LIVE mutations.
+        self._last_live_request = None
+        self._last_live_login = None
+        self._unavailable = None
+        supplied = (x_cap_api_key, identifier, password)
+        if all(value is None for value in supplied):
+            values = load_credentials()
+            x_cap_api_key, identifier, password = (values[key] for key in ("X-CAP-API-KEY", "identifier", "password"))
+        elif any(value is None for value in supplied):
+            raise ValueError("all_three_credentials_required")
 
         self.X_CAP_API_KEY = x_cap_api_key
         self.IDENTIFIER = identifier
@@ -23,77 +40,117 @@ class TradingApi:
         self.x_security_token = ""
         self.encryption_key = ""
 
-        self.pingService()
+        if auto_authenticate:
+            self.pingService()
 
-    def getCstAndXSecurityToken(self) -> list[str] | None:
-        # Login Headers
-        headers = {
-            "X-CAP-API-KEY": self.X_CAP_API_KEY,
-            "Content-Type": "application/json",
-        }
+    @property
+    def environment(self):
+        return self._environment
 
-        # Login Body
-        payload = {"identifier": self.IDENTIFIER, "password": self.PASSWORD}
+    @property
+    def BASE_URL(self):
+        # An authenticated client cannot be retargeted to another environment.
+        return endpoint(self._environment)
 
-        response = requests.post(
-            f"{self.BASE_URL}/api/v1/session", json=payload, headers=headers
-        )
+    def _invalidate_session(self, reason):
+        self._unavailable = reason
+        self.cst = self.x_security_token = ""
+        self._login_has_active_environment = False
+        self._login_account_id = None
+        if self._live_execution is not None:
+            self._live_execution.armed = False
 
-        if response.status_code == 200:
-            # THE TOKENS ARE IN THE HEADERS
-            cst_token = response.headers.get("CST")
-            security_token = response.headers.get("X-SECURITY-TOKEN")
+    def _stop(self, reason, *, mutation=False):
+        self._invalidate_session(reason)
+        raise TradingUnavailable(reason, mutation=mutation) from None
 
-            return (cst_token, security_token)
-        else:
-            print(f"Failed to login: {response.status_code} - {response.text}")
-            return None
+    def _require_available(self):
+        if self._unavailable is not None:
+            raise TradingUnavailable(self._unavailable) from None
+
+    def _request(self, method, url, **kwargs):
+        self._require_available()
+        path = urlsplit(url).path
+        mutation = method.lower() != "get" and path != "/api/v1/session"
+        if mutation and not (self.cst and self.x_security_token):
+            self._stop("authentication_unavailable")
+        if self.environment == "live":
+            now = time.monotonic()
+            delay = max(0, 0.12 - (now - self._last_live_request)) if self._last_live_request is not None else 0
+            if method == "post" and url.endswith("/api/v1/session") and self._last_live_login is not None:
+                delay = max(delay, 1.1 - (now - self._last_live_login))
+            if delay:
+                time.sleep(delay)
+            self._last_live_request = time.monotonic()
+            if method == "post" and url.endswith("/api/v1/session"):
+                self._last_live_login = self._last_live_request
+        kwargs.update(timeout=REQUEST_TIMEOUT, allow_redirects=False, verify=True)
+        try:
+            res = getattr(requests, method)(url, **kwargs)
+        except (requests.exceptions.RequestException, OSError) as exc:
+            self._stop(network_failure_reason(exc), mutation=mutation)
+        # Ping has one existing authentication refresh; login retains its None-on-failure contract.
+        auth_endpoint = path == "/api/v1/ping" or (path == "/api/v1/session" and method.lower() == "post")
+        if res.status_code in (401, 403) and not auth_endpoint:
+            self._stop("authentication_failed_http_401" if res.status_code == 401 else "permission_denied_http_403",
+                       mutation=mutation)
+        pending_confirmation = path.startswith("/api/v1/confirms/") and res.status_code == 404
+        if res.status_code >= 300 and not auth_endpoint and not pending_confirmation and (
+                method.lower() == "get" or res.status_code >= 500 or res.status_code < 400):
+            self._stop(f"http_{res.status_code}", mutation=mutation)
+        if res.status_code == 200:
+            try:
+                res.json()
+            except ValueError:
+                self._stop("invalid_api_response", mutation=mutation)
+        return res
+
+    def getCstAndXSecurityToken(self) -> tuple[str, str] | None:
+        if self.createNewSession() is not None:
+            return self.cst, self.x_security_token
+        return None
 
     def getServerTime(self) -> str | None:
-        res = requests.get(f"{self.BASE_URL}/api/v1/time")
+        res = self._request("get", f"{self.BASE_URL}/api/v1/time", timeout=20, allow_redirects=False)
         if res.status_code == 200:
             return res.json()
 
         return None
 
-    def pingService(self) -> str | None:
+    def pingService(self) -> tuple[dict, int]:
         payload = ""
         headers = {"X-SECURITY-TOKEN": self.x_security_token, "CST": self.cst}
-        res = requests.get(
-            f"{self.BASE_URL}/api/v1/ping", json=payload, headers=headers
-        )
+        res = self._request("get",
+            f"{self.BASE_URL}/api/v1/ping", json=payload, headers=headers, timeout=20, allow_redirects=False)
         if res.status_code == 200:
             return res.json(), res.status_code
 
 
-        # get CST and X_SECURITY_TOKEN, then ping service again
+        # Refresh authentication only for an expired or unauthorized session.
+        if res.status_code not in (401, 403):
+            self._stop(f"http_{res.status_code}")
         cstAndXSecurityToken = self.getCstAndXSecurityToken()
-        if cstAndXSecurityToken:
-            self.cst = cstAndXSecurityToken[0]
-            self.x_security_token = cstAndXSecurityToken[1]
+        if not cstAndXSecurityToken:
+            self._require_available()
+            self._stop("authentication_unavailable")
+        self.cst, self.x_security_token = cstAndXSecurityToken
 
         payload = ""
         headers = {"X-SECURITY-TOKEN": self.x_security_token, "CST": self.cst}
-        res = requests.get(
-            f"{self.BASE_URL}/api/v1/ping", json=payload, headers=headers
-        )
+        res = self._request("get",
+            f"{self.BASE_URL}/api/v1/ping", json=payload, headers=headers, timeout=20, allow_redirects=False)
 
-        if res.status_code == 200:
-            return res.json()
-
-        print("ping service failed error: ", end='')
-        print(res.json)
-
+        if res.status_code != 200:
+            self._stop("authentication_failed_http_401" if res.status_code == 401 else
+                       "permission_denied_http_403" if res.status_code == 403 else f"http_{res.status_code}")
         return res.json(), res.status_code
 
     def getEncryptionKey(self) -> dict | None:
-        payload = ""
         headers = {"X-CAP-API-KEY": self.X_CAP_API_KEY}
-        res = requests.get(
+        res = self._request("get",
             f"{self.BASE_URL}/api/v1/session/encryptionKey",
-            json=payload,
             headers=headers,
-        )
+            timeout=20, allow_redirects=False)
         if res.status_code == 200:
             self.encryption_key = res.json().get("encryptionKey")
 
@@ -104,28 +161,77 @@ class TradingApi:
     def getSessionDetails(self) -> dict | None:
         payload = ""
         headers = {"X-SECURITY-TOKEN": self.x_security_token, "CST": self.cst}
-        res = requests.get(
-            f"{self.BASE_URL}/api/v1/session", json=payload, headers=headers
-        )
+        res = self._request("get",
+            f"{self.BASE_URL}/api/v1/session", json=payload, headers=headers, timeout=20, allow_redirects=False)
         if res.status_code == 200:
             return res.json()
 
         return None
 
     def createNewSession(self) -> dict | None:
-        self.load_keys()
-        payload = {"identifier": self.IDENTIFIER, "password": self.PASSWORD}
+        self._require_available()
+        self.cst = self.x_security_token = ""
+        self._login_has_active_environment = False
+        self._login_account_id = None
+        if self._live_execution is not None:
+            self._live_execution.armed = False
+        payload = {"identifier": self.IDENTIFIER, "password": self.PASSWORD,
+                   "encryptedPassword": False}
         headers = {
             "X-CAP-API-KEY": self.X_CAP_API_KEY,
             "Content-Type": "application/json",
         }
-        res = requests.post(
-            f"{self.BASE_URL}/api/v1/session", json=payload, headers=headers
+        res = self._request("post",
+            f"{self.BASE_URL}/api/v1/session", json=payload, headers=headers, timeout=20, allow_redirects=False
         )
         if res.status_code == 200:
-            return res.json()
-
+            cst = res.headers.get("CST")
+            security_token = res.headers.get("X-SECURITY-TOKEN")
+            if not cst or not security_token:
+                self._invalidate_session("missing_session_tokens")
+                print("Login response missing required session headers")
+                return None
+            details = res.json()
+            flag = "hasActiveLiveAccounts" if self.environment == "live" else "hasActiveDemoAccounts"
+            self._login_has_active_environment = isinstance(details, dict) and details.get(flag) is True
+            self._login_account_id = details.get("currentAccountId") if isinstance(details, dict) else None
+            self.cst, self.x_security_token = cst, security_token
+            return details
+        # Do not log response bodies, credentials, or session tokens.
+        self._invalidate_session("authentication_failed_http_401" if res.status_code == 401 else
+                                 "permission_denied_http_403" if res.status_code == 403 else f"http_{res.status_code}")
+        print(f"Failed to login: HTTP {res.status_code}")
         return None
+
+    def verify_account_environment(self):
+        """Discover the active account without switching it; reject ambiguous LIVE trading."""
+        if not self._login_has_active_environment:
+            raise RuntimeError("authenticated_environment_not_verified")
+        if not isinstance(self._login_account_id, str) or not self._login_account_id:
+            raise RuntimeError("authenticated_login_account_not_verified")
+        session, accounts = self.getSessionDetails(), self.getAllAccounts()
+        if not isinstance(session, dict) or not isinstance(accounts, dict):
+            raise RuntimeError("account_discovery_failed")
+        rows = accounts.get("accounts")
+        if not isinstance(rows, list):
+            raise RuntimeError("invalid_account_list")
+        expected_demo = self.environment == "demo"
+        eligible = [row for row in rows if row.get("status") == "ENABLED" and row.get("accountType") == "CFD"
+                    and row.get("demo", expected_demo) is expected_demo]
+        current = session.get("accountId")
+        if current != self._login_account_id:
+            raise RuntimeError("login_session_account_mismatch_no_switch_performed")
+        active = [row for row in eligible if isinstance(current, str) and row.get("accountId") == current]
+        if len(active) != 1:
+            raise RuntimeError("active_account_environment_mismatch")
+        if self._account_selection is not None:
+            selected = [row for row in eligible if isinstance(row.get("accountId"), str)
+                        and self._account_selection in (row["accountId"], hashlib.sha256(row["accountId"].encode()).hexdigest()[:12])]
+            if len(selected) != 1 or selected[0]["accountId"] != current:
+                raise RuntimeError("selected_account_not_active_no_switch_performed")
+        elif self.environment == "live" and len(eligible) > 1:
+            raise RuntimeError("multiple_live_accounts_require_explicit_selection")
+        return active[0]
 
     def switchesActiveAccount(self):
         pass
@@ -136,9 +242,8 @@ class TradingApi:
     def getAllAccounts(self) -> dict | None:
         payload = ""
         headers = {"X-SECURITY-TOKEN": self.x_security_token, "CST": self.cst}
-        res = requests.get(
-            f"{self.BASE_URL}/api/v1/accounts", json=payload, headers=headers
-        )
+        res = self._request("get",
+            f"{self.BASE_URL}/api/v1/accounts", json=payload, headers=headers, timeout=20, allow_redirects=False)
         if res.status_code == 200:
             return res.json()
 
@@ -147,11 +252,10 @@ class TradingApi:
     def getAccountPreferences(self) -> dict | None:
         payload = ""
         headers = {"X-SECURITY-TOKEN": self.x_security_token, "CST": self.cst}
-        res = requests.get(
+        res = self._request("get",
             f"{self.BASE_URL}/api/v1/accounts/preferences",
             json=payload,
-            headers=headers,
-        )
+            headers=headers, timeout=20, allow_redirects=False)
         if res.status_code == 200:
             return res.json()
 
@@ -163,11 +267,10 @@ class TradingApi:
     def getAccountActivityHistory(self) -> dict | None:
         payload = ""
         headers = {"X-SECURITY-TOKEN": self.x_security_token, "CST": self.cst}
-        res = requests.get(
+        res = self._request("get",
             f"{self.BASE_URL}/api/v1/history/activity",
             json=payload,
-            headers=headers,
-        )
+            headers=headers, timeout=20, allow_redirects=False)
         if res.status_code == 200:
             return res.json()
 
@@ -176,11 +279,10 @@ class TradingApi:
     def getAccountTransactionsHistory(self) -> dict | None:
         payload = ""
         headers = {"X-SECURITY-TOKEN": self.x_security_token, "CST": self.cst}
-        res = requests.get(
+        res = self._request("get",
             f"{self.BASE_URL}/api/v1/history/transactions",
             json=payload,
-            headers=headers,
-        )
+            headers=headers, timeout=20, allow_redirects=False)
         if res.status_code == 200:
             return res.json()
 
@@ -192,11 +294,10 @@ class TradingApi:
     def getPositionOrderConfirmation(self, dealReference: str) -> dict | None:
         payload = ""
         headers = {"X-SECURITY-TOKEN": self.x_security_token, "CST": self.cst}
-        res = requests.get(
+        res = self._request("get",
             f"{self.BASE_URL}/api/v1/confirms/{dealReference}",
             json=payload,
-            headers=headers,
-        )
+            headers=headers, timeout=20, allow_redirects=False)
         if res.status_code == 200:
             return res.json()
 
@@ -205,14 +306,15 @@ class TradingApi:
     def getAllPositions(self) -> dict | None:
         payload = ""
         headers = {"X-SECURITY-TOKEN": self.x_security_token, "CST": self.cst}
-        res = requests.get(
-            f"{self.BASE_URL}/api/v1/positions", json=payload, headers=headers
-        )
+        res = self._request("get",
+            f"{self.BASE_URL}/api/v1/positions", json=payload, headers=headers, timeout=20, allow_redirects=False)
 
         return res.json(), res.status_code
     
     def getAllPositionsList(self) -> list[TradingPosition]:
         result, code = self.getAllPositions()
+        if code != 200:
+            raise RuntimeError("positions_discovery_failed")
 
         # List comprehension to create the objects
         trading_positions_list = [
@@ -221,6 +323,8 @@ class TradingApi:
                 dealId=item['position']['dealId']
             ) 
             for item in result['positions']
+            if self.environment != "live" or (self._live_execution is not None
+                                              and item['position']['dealId'] in self._live_execution.owned)
         ]
 
         return trading_positions_list
@@ -239,25 +343,40 @@ class TradingApi:
         profitDistance: int = 0,
         profitAmount: int = 0,
     ) -> tuple[dict, int]| None:
+        self._require_available()
+        if self.environment == "live":
+            self.verify_account_environment()
+            if self._live_execution is None:
+                from scripts.live_execution import LiveSafetyStop
+                raise LiveSafetyStop("live_execution_not_armed_strategy_preflight_required")
         payload = {
             "epic": epic,
             "direction": direction,
             "size": size,
             "guaranteedStop": guaranteedStop,
-            # "stopLevel": stopLevel,
-            # "profitLevel": profitLevel,
         }
+        for name, value in (("stopLevel", stopLevel), ("profitLevel", profitLevel),
+                            ("trailingStop", trailingStop), ("stopDistance", stopDistance),
+                            ("stopAmount", stopAmount), ("profitDistance", profitDistance),
+                            ("profitAmount", profitAmount)):
+            if value:
+                payload[name] = value
+        if self.environment == "live":
+            payload.setdefault("stopDistance", float(self._live_execution.args.stop_distance))
+            return self._live_execution.execute("open", lambda: self._post_position(payload), payload=payload)
+        return self._post_position(payload)
+
+    def _post_position(self, payload):
         headers = {
             "X-SECURITY-TOKEN": self.x_security_token,
             "CST": self.cst,
             "Content-Type": "application/json",
         }
-        res = requests.post(
-            f"{self.BASE_URL}/api/v1/positions", json=payload, headers=headers
-        )
+        res = self._request("post",
+            f"{self.BASE_URL}/api/v1/positions", json=payload, headers=headers, timeout=20, allow_redirects=False)
 
         if res.status_code != 200:
-            print(f"createPosition : {res.json()}")
+            print(f"createPosition: HTTP {res.status_code}")
 
         return res.json(), res.status_code
 
@@ -267,9 +386,8 @@ class TradingApi:
             "X-SECURITY-TOKEN": self.x_security_token,
             "CST": self.cst,
         }
-        res = requests.get(
-            f"{self.BASE_URL}/api/v1/positions/{dealId}", json=payload, headers=headers
-        )
+        res = self._request("get",
+            f"{self.BASE_URL}/api/v1/positions/{dealId}", json=payload, headers=headers, timeout=20, allow_redirects=False)
         if res.status_code == 200:
             return res.json()
 
@@ -278,16 +396,25 @@ class TradingApi:
     def updatePosition(self) -> dict | None:
         return None
     
-    def closePosition(self, dealId: str) -> dict | None:
-        payload = ''
+    def closePosition(self, dealId: str) -> tuple[dict, int]:
+        self._require_available()
+        if self.environment == "live":
+            self.verify_account_environment()
+            if self._live_execution is None:
+                from scripts.live_execution import LiveSafetyStop
+                raise LiveSafetyStop("live_execution_not_armed_strategy_preflight_required")
+            return self._live_execution.execute("close", lambda: self._delete_position(dealId), deal_id=dealId)
+        return self._delete_position(dealId)
+
+    def _delete_position(self, dealId):
         headers = {
         'X-SECURITY-TOKEN': self.x_security_token,
         'CST': self.cst
         }
-        res = requests.delete(f"{self.BASE_URL}/api/v1/positions/{dealId}", json=payload, headers=headers)
+        res = self._request("delete", f"{self.BASE_URL}/api/v1/positions/{dealId}", headers=headers, timeout=20, allow_redirects=False)
 
         if res.status_code != 200:
-            print(f"closePosition : {res.json()}")
+            print(f"closePosition: HTTP {res.status_code}")
         return res.json(), res.status_code
 
     def getAllWorkingOrders(self) -> dict | None:
@@ -296,9 +423,8 @@ class TradingApi:
             "X-SECURITY-TOKEN": self.x_security_token,
             "CST": self.cst,
         }
-        res = requests.get(
-            f"{self.BASE_URL}/api/v1/workingorders", json=payload, headers=headers
-        )
+        res = self._request("get",
+            f"{self.BASE_URL}/api/v1/workingorders", json=payload, headers=headers, timeout=20, allow_redirects=False)
         if res.status_code == 200:
             return res.json()
 
@@ -319,9 +445,8 @@ class TradingApi:
             "X-SECURITY-TOKEN": self.x_security_token,
             "CST": self.cst,
         }
-        res = requests.get(
-            f"{self.BASE_URL}/api/v1/marketnavigation", json=payload, headers=headers
-        )
+        res = self._request("get",
+            f"{self.BASE_URL}/api/v1/marketnavigation", json=payload, headers=headers, timeout=20, allow_redirects=False)
         if res.status_code == 200:
             return res.json()
 
@@ -333,9 +458,8 @@ class TradingApi:
             "X-SECURITY-TOKEN": self.x_security_token,
             "CST": self.cst,
         }
-        res = requests.get(
-            f"{self.BASE_URL}/api/v1/marketnavigation/{nodeId}", json=payload, headers=headers
-        )
+        res = self._request("get",
+            f"{self.BASE_URL}/api/v1/marketnavigation/{nodeId}", json=payload, headers=headers, timeout=20, allow_redirects=False)
         if res.status_code == 200:
             return res.json()
 
@@ -347,9 +471,8 @@ class TradingApi:
             "X-SECURITY-TOKEN": self.x_security_token,
             "CST": self.cst,
         }
-        res = requests.get(
-            f"{self.BASE_URL}/api/v1/markets?epics={epics}", json=payload, headers=headers
-        )
+        res = self._request("get",
+            f"{self.BASE_URL}/api/v1/markets?epics={epics}", json=payload, headers=headers, timeout=20, allow_redirects=False)
         if res.status_code == 200:
             return res.json()
 
@@ -361,9 +484,8 @@ class TradingApi:
             "X-SECURITY-TOKEN": self.x_security_token,
             "CST": self.cst,
         }
-        res = requests.get(
-            f"{self.BASE_URL}/api/v1/markets/{epic}", json=payload, headers=headers
-        )
+        res = self._request("get",
+            f"{self.BASE_URL}/api/v1/markets/{epic}", json=payload, headers=headers, timeout=20, allow_redirects=False)
         if res.status_code == 200:
             return res.json()
 
@@ -389,12 +511,11 @@ class TradingApi:
             "X-SECURITY-TOKEN": self.x_security_token,
             "CST": self.cst,
         }
-        res = requests.get(
-            f"{self.BASE_URL}/api/v1/prices/{epic}?resolution={resolution}&max={max}", json=payload, headers=headers
-        )
+        res = self._request("get",
+            f"{self.BASE_URL}/api/v1/prices/{epic}?resolution={resolution}&max={max}", json=payload, headers=headers, timeout=20, allow_redirects=False)
 
         if res.status_code != 200:
-            print(f"getHistoricalPrices : {res.json()}")
+            self._stop(f"http_{res.status_code}")
 
         return res.json(), res.status_code
 
@@ -405,23 +526,17 @@ class TradingApi:
             )
 
             if code != 200:
-                print(f"getHistoricalPricesList : {result}")
-                print(f"symbol: {symbol}")
-                print(f"time_frame: {time_frame}")
-                print(f"period: {period}")
-                return []
+                self._stop(f"http_{code}")
 
             prices: List[float] = [item["closePrice"]["ask"] for item in result["prices"]]
-            result = prices[1::2]
-            return prices
+            return prices[1::2]
 
         result, code = self.getHistoricalPrices(
             symbol, time_frame, period
         )
 
         if code != 200:
-            print(f"getHistoricalPricesList : {result}")
-            return []
+            self._stop(f"http_{code}")
 
         prices: List[float] = [item["closePrice"]["ask"] for item in result["prices"]]
         return prices
@@ -438,9 +553,8 @@ class TradingApi:
             "X-SECURITY-TOKEN": self.x_security_token,
             "CST": self.cst,
         }
-        res = requests.get(
-            f"{self.BASE_URL}/api/v1/watchlists", json=payload, headers=headers
-        )
+        res = self._request("get",
+            f"{self.BASE_URL}/api/v1/watchlists", json=payload, headers=headers, timeout=20, allow_redirects=False)
         if res.status_code == 200:
             return res.json()
 
@@ -498,12 +612,9 @@ class TradingApi:
         print("Market is now OPEN!")
     
     def write_keys(self):
-        dotenv_path = find_dotenv()
-        if dotenv_path:
-            set_key(dotenv_path, "CST", self.cst)
-            set_key(dotenv_path, "X_SECURITY_TOKEN", self.x_security_token)
+        """Compatibility no-op: shared .env must never cache unlabelled session tokens."""
+        return None
 
     def load_keys(self):
-        load_dotenv(find_dotenv())
-        self.cst = os.getenv("CST", "")
-        self.x_security_token = os.getenv("X_SECURITY_TOKEN", "")
+        """Compatibility no-op: tokens belong only to this client and environment."""
+        return None

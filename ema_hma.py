@@ -1,6 +1,5 @@
-import os
-from dotenv import find_dotenv, load_dotenv
 from TradingApi import TradingApi
+from scripts.trading_config import add_trading_arguments, create_trading_api
 from indicators import calculate_hma_result, calculate_two_ema_result
 from colors import colors
 import argparse
@@ -19,9 +18,7 @@ DEFAULT_TIME_FRAME = "MINUTE_5"
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--real", action="store_true")
-    parser.add_argument("--size", type=float)
-    parser.add_argument("--symbol", type=str)
+    add_trading_arguments(parser)
     parser.add_argument("--long_period", type=int)
     parser.add_argument("--short_period", type=int)
     parser.add_argument("--hma_period", type=int)
@@ -29,16 +26,9 @@ def main() -> None:
     parser.add_argument("--time_frame", type=str)
 
     args = parser.parse_args()
-    if args.size:
-        QUANTITY: int = args.size
-    else:
-        QUANTITY: int = DEFAULT_QUANTITY
-    
-    if args.symbol:
-        SYMBOL: str = args.symbol
-    else:
-        SYMBOL: str = DEFAULT_SYMBOL
-    
+    QUANTITY = args.size
+    SYMBOL = args.symbol
+
     if args.hma_period:
         HMA_PERIOD: int = args.hma_period
     else:
@@ -65,13 +55,7 @@ def main() -> None:
         TIME_FRAME: str = DEFAULT_TIME_FRAME
 
     # 1. Environment & Auth
-    load_dotenv(find_dotenv())
-    tradingApi = TradingApi(
-        os.getenv("X-CAP-API-KEY", ""),
-        os.getenv("identifier", ""),
-        os.getenv("password", ""),
-        args.real,
-    )
+    tradingApi = create_trading_api(args, symbol=SYMBOL, size=QUANTITY)
 
     TIMES = timeframe_to_minutes(TIME_FRAME)
 

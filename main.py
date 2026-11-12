@@ -1,6 +1,6 @@
-import os
-from dotenv import find_dotenv, load_dotenv
+import argparse
 from TradingApi import TradingApi
+from scripts.trading_config import add_trading_arguments, create_trading_api
 import time
 
 SYMBOL = "EURUSD"
@@ -10,10 +10,10 @@ QUANTITY = 100
 SLEEP_TIME = 60
 
 
-def update_prices(prices: list, tradingApi: TradingApi):
+def update_prices(prices: list, tradingApi: TradingApi, symbol=SYMBOL):
     prices.pop(0)
 
-    result = tradingApi.getHistoricalPrices(SYMBOL, "MINUTE", 1)
+    result, _ = tradingApi.getHistoricalPrices(symbol, "MINUTE", 1)
     price = result['prices'][0]['openPrice']['ask']
     prices.append(price)
 
@@ -23,22 +23,12 @@ def price_average(prices: list) -> float:
 
 
 def main():
-    dotenv_path = find_dotenv()
-    if dotenv_path:
-        load_dotenv(dotenv_path)
-    else:
-        print("Can't find .env")
-        exit()
-
-    IDENTIFIER = os.getenv("identifier")
-    PASSWORD = os.getenv("password")
-    X_CAP_API_KEY = os.getenv('X-CAP-API-KEY')
-    CST = os.getenv('CST')
-    X_SECURITY_TOKEN = os.getenv('X_SECURITY_TOKEN')
-
-
-    tradingApi = TradingApi(X_CAP_API_KEY, IDENTIFIER, PASSWORD, CST, X_SECURITY_TOKEN)
-    result = tradingApi.getHistoricalPrices(SYMBOL, "MINUTE", 20)
+    parser = argparse.ArgumentParser()
+    add_trading_arguments(parser)
+    args = parser.parse_args()
+    SYMBOL, QUANTITY = args.symbol, args.size
+    tradingApi = create_trading_api(args, symbol=SYMBOL, size=QUANTITY)
+    result, _ = tradingApi.getHistoricalPrices(SYMBOL, "MINUTE", 20)
 
     prices = []
     for item in result['prices']:
@@ -49,25 +39,25 @@ def main():
 
     if prices[-1] < price_average(prices):
         while prices[-1] < price_average(prices):
-            update_prices(prices, tradingApi)
+            update_prices(prices, tradingApi, SYMBOL)
             print(prices)
             print("----------")
             time.sleep(SLEEP_TIME)
     else:
         while prices[-1] > price_average(prices):
-            update_prices(prices, tradingApi)
+            update_prices(prices, tradingApi, SYMBOL)
             print(prices)
             print("----------")
             time.sleep(SLEEP_TIME)
 
     status = ""
     while True:
-        update_prices(prices, tradingApi)
+        update_prices(prices, tradingApi, SYMBOL)
         print(prices)
         print("----------")
 
         if prices[-1] > price_average(prices) and status != "BUY":
-            result, statuscode = tradingApi.createPosition(SYMBOL, "BUY", 100)
+            result, statuscode = tradingApi.createPosition(SYMBOL, "BUY", QUANTITY)
             if statuscode == 200:
                 print("Buy")
                 status = "BUY"
@@ -76,7 +66,7 @@ def main():
             print("----------")
 
         if prices[-1] < price_average(prices) and status != "SELL":
-            result, statuscode = tradingApi.createPosition(SYMBOL, "SELL", 100)
+            result, statuscode = tradingApi.createPosition(SYMBOL, "SELL", QUANTITY)
             if statuscode == 200:
                 print("SELL")
                 status = "SELL"
@@ -86,4 +76,5 @@ def main():
 
         time.sleep(SLEEP_TIME)
 
-main()
+if __name__ == "__main__":
+    main()
