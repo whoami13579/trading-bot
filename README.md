@@ -77,3 +77,12 @@ result = run_hma_backtest([1 + i / 1000 for i in range(100)], period=20)
 - [Migration, compatibility and backtest corrections](docs/refactoring.md)
 
 Review the safety and integration documents before any authenticated command.
+
+
+## Complete API client
+
+See [API usage and safe DEMO examples](docs/api-usage.md) and the
+[official-operation coverage matrix](docs/api-coverage.md).
+The client covers 36 REST operations and five streaming destinations. New LIVE
+mutation categories remain blocked pending dedicated risk policies; existing
+LIVE open/close controls are preserved. `test.py` remains unchanged.

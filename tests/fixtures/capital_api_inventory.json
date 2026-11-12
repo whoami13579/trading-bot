@@ -1,0 +1,2754 @@
+[
+  {
+    "method": "get",
+    "path": "/api/v1/time",
+    "python_method": "getServerTime",
+    "initial_status": "implemented",
+    "parameters": [],
+    "description": "Test connectivity to the API and get the current server time\n\nAuthentication is not required for this endpoint",
+    "response_examples": [
+      {
+        "serverTime": 1649259764171
+      }
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/v1/ping",
+    "python_method": "pingService",
+    "initial_status": "implemented",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token or account id identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      }
+    ],
+    "description": "Ping the service to keep a trading session alive",
+    "response_examples": [
+      {
+        "status": "OK"
+      }
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/v1/session/encryptionKey",
+    "python_method": "getEncryptionKey",
+    "initial_status": "implemented",
+    "parameters": [
+      {
+        "name": "X-CAP-API-KEY",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "The API key obtained from Settings > API Integrations page on the Capital.com trading platform",
+        "example": "ENTER_GENERATED_API_KEY"
+      }
+    ],
+    "description": "Get the encryption key to use in order to send the API key password in an encrypted form",
+    "response_examples": [
+      {
+        "encryptionKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxOZgr4OMjNBMKpR+fZpxrDGGwDk3eGnrI+AvRq1X+psNZEjcQ/tR7XkXfy/BzhXKsrdJO4dqwFrULg03olkhapNpo0wr3Jhr3QLPOeX7bAvgL1pkg/1/ySX4ZPZ8tYuGFXRX0v/DeMYJFFiW1NjHS2phTlmVAHy6a5VRx/GmkvBxo/Xh6L0uaIZIbxNRoU1T+4oR7eaIVKtDL5uxX518EgvpU5QNFMg03Z+e5BTczCPR7xmnpKFMsu40zdICtdylxHXBupuh9zeQ5Rbx1xc72x3emUxL4PRCTh/t0gb9mCID4/AIQqSRykY9NpfkXGJV5mBN/3ZHJanHiE2mnVTlbwIBOOBA",
+        "timeStamp": 1649058606014
+      }
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/v1/session",
+    "python_method": "getSessionDetails",
+    "initial_status": "implemented",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token or account id identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      }
+    ],
+    "description": "Returns the user's session details",
+    "response_examples": [
+      {
+        "clientId": "12345678",
+        "accountId": "12345678901234567",
+        "timezoneOffset": 3,
+        "locale": "en",
+        "currency": "USD",
+        "streamEndpoint": "wss://api-streaming-capital.backend-capital.com/"
+      }
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/api/v1/session",
+    "python_method": "createNewSession",
+    "initial_status": "partial",
+    "parameters": [
+      {
+        "name": "X-CAP-API-KEY",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "The API key obtained from Settings > API Integrations page on the Capital.com trading platform",
+        "example": "ENTER_GENERATED_API_KEY"
+      }
+    ],
+    "description": "Create a trading session, obtaining session tokens for subsequent API access\n\nSession is active for 10 minutes. In case your inactivity is longer than this period then you need to create a new session\n\nEndpoint limit: 1 request per second\n\nList of request body parameters:\n\n| **Parameter** | **Format** | **Required?** | **Description** |\n| --- | --- | --- | --- |\n| identifier | string | YES | Client login identifier |\n| password | string | YES | API key custom password |\n| encryptedPassword | boolean | NO | Whether the password has been encrypted.  <br>Default value: `false` |",
+    "response_examples": [
+      "{\r\n\t\"accountType\": \"CFD\",\r\n\t\"accountInfo\": {\r\n        \"balance\": 92.89,\r\n        \"deposit\": 90.38,\r\n        \"profitLoss\": 2.51,\r\n        \"available\": 64.66\r\n    },\r\n\t\"currencyIsoCode\": \"USD\",\r\n\t\"currencySymbol\": \"$\",\r\n\t\"currentAccountId\": \"12345678901234567\",\r\n\t\"streamingHost\": \"wss://api-streaming-capital.backend-capital.com/\",\r\n\t\"accounts\": [\r\n        {\r\n            \"accountId\": \"12345678901234567\",\r\n            \"accountName\": \"USD\",\r\n            \"preferred\": true,\r\n            \"accountType\": \"CFD\",\r\n            \"currency\": \"USD\",\r\n            \"symbol\": \"$\",\r\n            \"balance\": {\r\n                \"balance\": 92.89,\r\n                \"deposit\": 90.38,\r\n                \"profitLoss\": 2.51,\r\n                \"available\": 64.66\r\n            }\r\n        },\r\n        {\r\n            \"accountId\": \"12345678907654321\",\r\n            \"accountName\": \"EUR\",\r\n            \"preferred\": false,\r\n            \"accountType\": \"CFD\",\r\n            \"currency\": \"EUR\",\r\n            \"symbol\": \"\u20ac\",\r\n            \"balance\": {\r\n                \"balance\": 0.0,\r\n                \"deposit\": 0.0,\r\n                \"profitLoss\": 0.0,\r\n                \"available\": 0.0\r\n            }\r\n        }\r\n\t],\r\n\t\"clientId\": \"12345678\",\r\n\t\"timezoneOffset\": 3,\r\n\t\"hasActiveDemoAccounts\": true,\r\n\t\"hasActiveLiveAccounts\": true,\r\n\t\"trailingStopsEnabled\": false\r\n}",
+      "{\r\n\t\"accountType\": \"CFD\",\r\n\t\"accountInfo\": {\r\n        \"balance\": 92.89,\r\n        \"deposit\": 90.38,\r\n        \"profitLoss\": 2.51,\r\n        \"available\": 64.66\r\n    },\r\n\t\"currencyIsoCode\": \"USD\",\r\n\t\"currencySymbol\": \"$\",\r\n\t\"currentAccountId\": \"12345678901234567\",\r\n\t\"streamingHost\": \"wss://api-streaming-capital.backend-capital.com/\",\r\n\t\"accounts\": [\r\n        {\r\n            \"accountId\": \"12345678901234567\",\r\n            \"accountName\": \"USD\",\r\n            \"preferred\": true,\r\n            \"accountType\": \"CFD\",\r\n            \"currency\": \"USD\",\r\n            \"symbol\": \"$\",\r\n            \"balance\": {\r\n                \"balance\": 92.89,\r\n                \"deposit\": 90.38,\r\n                \"profitLoss\": 2.51,\r\n                \"available\": 64.66\r\n            }\r\n        },\r\n        {\r\n            \"accountId\": \"12345678907654321\",\r\n            \"accountName\": \"EUR\",\r\n            \"preferred\": false,\r\n            \"accountType\": \"CFD\",\r\n            \"currency\": \"EUR\",\r\n            \"symbol\": \"\u20ac\",\r\n            \"balance\": {\r\n                \"balance\": 0.0,\r\n                \"deposit\": 0.0,\r\n                \"profitLoss\": 0.0,\r\n                \"available\": 0.0\r\n            }\r\n        }\r\n\t],\r\n\t\"clientId\": \"12345678\",\r\n\t\"timezoneOffset\": 3,\r\n\t\"hasActiveDemoAccounts\": true,\r\n\t\"hasActiveLiveAccounts\": true,\r\n\t\"trailingStopsEnabled\": false\r\n}"
+    ]
+  },
+  {
+    "method": "put",
+    "path": "/api/v1/session",
+    "python_method": "switchesActiveAccount",
+    "initial_status": "stub",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      }
+    ],
+    "description": "Switch active account\n\nList of request body parameters:\n\n| **Parameter** | **Format** | **Required?** | **Description** |\n| --- | --- | --- | --- |\n| accountId | string | YES | The identifier of the account being switched to |",
+    "response_examples": [
+      {
+        "trailingStopsEnabled": false,
+        "dealingEnabled": true,
+        "hasActiveDemoAccounts": false,
+        "hasActiveLiveAccounts": true
+      }
+    ]
+  },
+  {
+    "method": "delete",
+    "path": "/api/v1/session",
+    "python_method": "logOutOfTheCurrentSession",
+    "initial_status": "stub",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      }
+    ],
+    "description": "Log out of the current session",
+    "response_examples": [
+      "{\n    \"status\": \"SUCCESS\"\n}"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/v1/accounts",
+    "python_method": "getAllAccounts",
+    "initial_status": "implemented",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      }
+    ],
+    "description": "Returns a list of\u00a0accounts\u00a0belonging to the logged-in client",
+    "response_examples": [
+      {
+        "accounts": [
+          {
+            "accountId": "12345678901234567",
+            "accountName": "USD",
+            "status": "ENABLED",
+            "accountType": "CFD",
+            "preferred": true,
+            "balance": {
+              "balance": 92.89,
+              "deposit": 90.38,
+              "profitLoss": 2.51,
+              "available": 64.66
+            },
+            "currency": "USD",
+            "symbol": "$"
+          },
+          {
+            "accountId": "12345678901234567",
+            "accountName": "EUR",
+            "status": "ENABLED",
+            "accountType": "CFD",
+            "preferred": false,
+            "balance": {
+              "balance": 0,
+              "deposit": 0,
+              "profitLoss": 0,
+              "available": 0
+            },
+            "currency": "EUR",
+            "symbol": "\u20ac"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/v1/accounts/preferences",
+    "python_method": "getAccountPreferences",
+    "initial_status": "implemented",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      }
+    ],
+    "description": "Returns account preferences, i.e. leverage settings and trading mode",
+    "response_examples": [
+      {
+        "hedgingMode": false,
+        "leverages": {
+          "SHARES": {
+            "current": 2,
+            "available": [
+              1,
+              2,
+              3,
+              5
+            ]
+          },
+          "CURRENCIES": {
+            "current": 1,
+            "available": [
+              1,
+              10,
+              20,
+              30
+            ]
+          },
+          "INDICES": {
+            "current": 10,
+            "available": [
+              1,
+              10,
+              20
+            ]
+          },
+          "CRYPTOCURRENCIES": {
+            "current": 1,
+            "available": [
+              1,
+              2
+            ]
+          },
+          "COMMODITIES": {
+            "current": 5,
+            "available": [
+              1,
+              5,
+              10,
+              20
+            ]
+          }
+        }
+      }
+    ]
+  },
+  {
+    "method": "put",
+    "path": "/api/v1/accounts/preferences",
+    "python_method": "updateAccountPreferences",
+    "initial_status": "stub",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      }
+    ],
+    "description": "Update account preferences\n\nList of request body parameters:\n\n| **Parameter** | **Format** | **Required?** | **Description** |\n| --- | --- | --- | --- |\n| leverages | object | NO | Set new leverage values |\n| hedgingMode | boolean | NO | Enable or disable hedging mode |",
+    "response_examples": [
+      {
+        "status": "SUCCESS"
+      }
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/v1/history/activity",
+    "python_method": "getAccountActivityHistory",
+    "initial_status": "partial",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      },
+      {
+        "name": "from",
+        "in": "query",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Start date. Date format: YYYY-MM-DDTHH:MM:SS (e.g. 2022-04-01T01:01:00). Filtration by date based on dateUTC parameter",
+        "example": "2022-01-17T15:09:47"
+      },
+      {
+        "name": "to",
+        "in": "query",
+        "schema": {
+          "type": "string"
+        },
+        "description": "End date. Date format: YYYY-MM-DDTHH:MM:SS (e.g. 2022-04-01T01:01:00). Filtration by date based on dateUTC parameter",
+        "example": "2022-01-17T15:10:05"
+      },
+      {
+        "name": "lastPeriod",
+        "in": "query",
+        "schema": {
+          "type": "integer"
+        },
+        "description": "Limits the timespan in seconds through to current time (not applicable if a date range has been specified). Cannot be bigger than current Unix timestamp value. Default = 600, max = 86400",
+        "example": "600"
+      },
+      {
+        "name": "detailed",
+        "in": "query",
+        "schema": {
+          "type": "boolean"
+        },
+        "description": "Indicates whether to retrieve additional details about the activity. False by default",
+        "example": "true"
+      },
+      {
+        "name": "dealId",
+        "in": "query",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Get activity information for specific dealId",
+        "example": "{{dealId}}"
+      },
+      {
+        "name": "filter",
+        "in": "query",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Filter activity list using FIQL. List of supported parameters: epic, source, status, type ",
+        "example": "source!=DEALER;type!=POSITION;status==REJECTED;epic==OIL_CRUDE,GOLD"
+      }
+    ],
+    "description": "Returns the account activity history\n\nAll query parameters are optional for this request\n\nThe maximum possible date range between `from` and `to` parameters is 1 day. If only one of the parameters is specified (`from` or `to`), the 1-day date range will be selected by default\n\nPossible enum values for parameters in FIQL filter:\n\n| **Parameter** | **ENUM** |\n| --- | --- |\n| source | `CLOSE_OUT`, `DEALER`, `SL`, `SYSTEM`, `TP`, `USER` |\n| status | `ACCEPTED`, `CREATED`, `EXECUTED`, `EXPIRED`, `REJECTED`, `MODIFIED`, `MODIFY_REJECT`, `CANCELLED`, `CANCEL_REJECT`, `UNKNOWN` |\n| type | `POSITION`, `WORKING_ORDER`, `EDIT_STOP_AND_LIMIT`, `SWAP`, `SYSTEM` |",
+    "response_examples": [
+      {
+        "activities": [
+          {
+            "date": "2022-01-17T18:09:47.344",
+            "dateUTC": "2022-01-17T15:09:47.344",
+            "epic": "OIL_CRUDE",
+            "dealId": "00018509-0001-54c4-0000-000080430164",
+            "source": "USER",
+            "type": "POSITION",
+            "status": "ACCEPTED"
+          },
+          {
+            "date": "2022-01-17T18:09:47.344",
+            "dateUTC": "2022-01-17T15:09:47.344",
+            "epic": "OIL_CRUDE",
+            "dealId": "00018509-0001-54c4-0000-000080430163",
+            "source": "SYSTEM",
+            "type": "WORKING_ORDER",
+            "status": "ACCEPTED"
+          },
+          {
+            "date": "2022-01-17T18:09:47.344",
+            "dateUTC": "2022-01-17T15:09:47.344",
+            "epic": "OIL_CRUDE",
+            "dealId": "00018509-0001-54c4-0000-000080430163",
+            "source": "USER",
+            "type": "WORKING_ORDER",
+            "status": "ACCEPTED"
+          }
+        ]
+      },
+      {
+        "activities": [
+          {
+            "date": "2022-01-03T18:01:48.536",
+            "dateUTC": "2022-01-03T15:01:48.536",
+            "epic": "OIL_CRUDE",
+            "dealId": "00018509-0001-54c4-0000-0000803c0ec6",
+            "source": "SYSTEM",
+            "type": "EDIT_STOP_AND_LIMIT",
+            "status": "REJECTED"
+          },
+          {
+            "date": "2021-12-27T18:26:31.847",
+            "dateUTC": "2021-12-27T15:26:31.847",
+            "epic": "OIL_CRUDE",
+            "dealId": "00018509-0001-54c4-0000-0000803c08e4",
+            "source": "SYSTEM",
+            "type": "EDIT_STOP_AND_LIMIT",
+            "status": "REJECTED"
+          },
+          {
+            "date": "2021-12-21T17:02:31.978",
+            "dateUTC": "2021-12-21T14:02:31.978",
+            "epic": "OIL_CRUDE",
+            "dealId": "00018509-0001-54c4-0000-0000803c0456",
+            "source": "SYSTEM",
+            "type": "EDIT_STOP_AND_LIMIT",
+            "status": "REJECTED"
+          },
+          {
+            "date": "2021-12-21T13:02:39.247",
+            "dateUTC": "2021-12-21T10:02:39.247",
+            "epic": "OIL_CRUDE",
+            "dealId": "00018509-0001-54c4-0000-0000803c03fa",
+            "source": "SYSTEM",
+            "type": "EDIT_STOP_AND_LIMIT",
+            "status": "REJECTED"
+          },
+          {
+            "date": "2021-12-21T11:02:45.459",
+            "dateUTC": "2021-12-21T08:02:45.459",
+            "epic": "OIL_CRUDE",
+            "dealId": "00018509-0001-54c4-0000-0000803c03ce",
+            "source": "SYSTEM",
+            "type": "EDIT_STOP_AND_LIMIT",
+            "status": "REJECTED"
+          },
+          {
+            "date": "2021-12-21T10:02:29.220",
+            "dateUTC": "2021-12-21T07:02:29.220",
+            "epic": "OIL_CRUDE",
+            "dealId": "00018509-0001-54c4-0000-0000803c03b7",
+            "source": "SYSTEM",
+            "type": "EDIT_STOP_AND_LIMIT",
+            "status": "REJECTED"
+          },
+          {
+            "date": "2021-10-27T14:01:42.138",
+            "dateUTC": "2021-10-27T11:01:42.138",
+            "epic": "OIL_CRUDE",
+            "dealId": "00018509-0001-54c4-0000-0000803900a2",
+            "source": "SYSTEM",
+            "type": "EDIT_STOP_AND_LIMIT",
+            "status": "REJECTED"
+          },
+          {
+            "date": "2021-09-17T12:41:59.500",
+            "dateUTC": "2021-09-17T09:41:59.500",
+            "epic": "GOLD",
+            "dealId": "00601567-0001-54c4-0000-000080370b17",
+            "source": "SYSTEM",
+            "type": "EDIT_STOP_AND_LIMIT",
+            "status": "REJECTED"
+          }
+        ]
+      },
+      {
+        "activities": [
+          {
+            "date": "2022-01-03T18:01:48.536",
+            "dateUTC": "2022-01-03T15:01:48.536",
+            "epic": "OIL_CRUDE",
+            "dealId": "00018509-0001-54c4-0000-0000803c0ec6",
+            "source": "SYSTEM",
+            "type": "EDIT_STOP_AND_LIMIT",
+            "status": "REJECTED",
+            "details": {
+              "dealReference": "p_00018509-0001-54c4-0000-0000803c0ec6",
+              "marketName": "Crude Oil",
+              "currency": "USD",
+              "size": 0,
+              "direction": "SELL",
+              "level": 75.31,
+              "guaranteedStop": false
+            }
+          },
+          {
+            "date": "2022-01-03T18:01:48.420",
+            "dateUTC": "2022-01-03T15:01:48.420",
+            "epic": "OIL_CRUDE",
+            "dealId": "00018509-0001-54c4-0000-0000803c0ec6",
+            "source": "CLOSE_OUT",
+            "type": "POSITION",
+            "status": "ACCEPTED",
+            "details": {
+              "dealReference": "p_00018509-0001-54c4-0000-0000803c0ec6",
+              "marketName": "Crude Oil",
+              "currency": "USD",
+              "size": 1,
+              "direction": "SELL",
+              "level": 75.2,
+              "guaranteedStop": false
+            }
+          },
+          {
+            "date": "2022-01-03T18:01:34.228",
+            "dateUTC": "2022-01-03T15:01:34.228",
+            "epic": "OIL_CRUDE",
+            "dealId": "00018509-0001-54c4-0000-0000803c0ec6",
+            "source": "USER",
+            "type": "POSITION",
+            "status": "ACCEPTED",
+            "details": {
+              "dealReference": "p_00018509-0001-54c4-0000-0000803c0ec6",
+              "marketName": "Crude Oil",
+              "currency": "USD",
+              "size": 1,
+              "direction": "BUY",
+              "level": 75.31,
+              "guaranteedStop": false
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/v1/history/transactions",
+    "python_method": "getAccountTransactionsHistory",
+    "initial_status": "partial",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      },
+      {
+        "name": "from",
+        "in": "query",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Start date. Date format: YYYY-MM-DDTHH:MM:SS (e.g. 2022-04-01T01:01:00). Filtration by date based on dateUTC parameter",
+        "example": "2021-08-10T00:00:00"
+      },
+      {
+        "name": "to",
+        "in": "query",
+        "schema": {
+          "type": "string"
+        },
+        "description": "End date. Date format: YYYY-MM-DDTHH:MM:SS (e.g. 2022-04-01T01:01:00). Filtration by date based on dateUTC parameter",
+        "example": "2021-09-10T00:00:01"
+      },
+      {
+        "name": "lastPeriod",
+        "in": "query",
+        "schema": {
+          "type": "integer"
+        },
+        "description": "Limits the timespan in seconds through to current time (not applicable if a date range has been specified). Cannot be bigger than current Unix timestamp value. Default = 600",
+        "example": "600"
+      },
+      {
+        "name": "type",
+        "in": "query",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Transaction type. Possible values: INACTIVITY_FEE, RESERVE, VOID, UNRESERVE, WRITE_OFF_OR_CREDIT, CREDIT_FACILITY, FX_COMMISSION, COMPLAINT_SETTLEMENT, DEPOSIT, WITHDRAWAL, REFUND, WITHDRAWAL_MONEY_BACK, TRADE, SWAP, TRADE_COMMISSION, TRADE_COMMISSION_GSL, NEGATIVE_BALANCE_PROTECTION, TRADE_CORRECTION, CHARGEBACK, ADJUSTMENT, BONUS, TRANSFER, CORPORATE_ACTION, CONVERSION, REBATE, TRADE_SLIPPAGE_PROTECTION",
+        "example": "DEPOSIT"
+      }
+    ],
+    "description": "Returns the transaction history. By default returns the transactions within the last 10 minutes\n\nAll query parameters are optional for this request",
+    "response_examples": [
+      {
+        "transactions": [
+          {
+            "date": "2022-04-04T16:51:05.648",
+            "dateUtc": "2022-04-04T16:51:05.648",
+            "instrumentName": "NATURALGAS",
+            "transactionType": "TRADE",
+            "note": "Trade closed",
+            "reference": "12345678",
+            "size": "1.05",
+            "currency": "USD",
+            "status": "PROCESSED"
+          },
+          {
+            "date": "2022-04-04T16:51:00.788",
+            "dateUtc": "2022-04-04T16:51:00.788",
+            "instrumentName": "US500",
+            "transactionType": "TRADE",
+            "note": "Trade closed",
+            "reference": "87654321",
+            "size": "416.0",
+            "currency": "USD",
+            "status": "PROCESSED"
+          }
+        ]
+      },
+      {
+        "transactions": [
+          {
+            "date": "2022-04-04T16:54:27.568",
+            "dateUtc": "2022-04-04T16:54:27.568",
+            "transactionType": "DEPOSIT",
+            "note": "Deposit",
+            "reference": "12345678",
+            "size": "20.0",
+            "currency": "USD",
+            "status": "PROCESSED"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/api/v1/accounts/topUp",
+    "python_method": "adjustBalanceOfDemoAccount",
+    "initial_status": "stub",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      }
+    ],
+    "description": "Adjust the balance of the current Demo account.\n\nNote: The balance of the Demo account cannot exceed 100000.\n\nLimits:\n\n- 10 requests per second;\n- 100 requests per account per day.\n    \n\nList of request body parameters:\n\n| **Parameter** | **Format** | **Required?** | **Description** |\n| --- | --- | --- | --- |\n| amount | number | YES | The amount of funds that will be added to the Demo account balance  <br>  <br>Notes:  <br>\\- Min value = -400000  <br>\\- Max value = 400000 |",
+    "response_examples": [
+      {
+        "successful": true
+      }
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/v1/positions",
+    "python_method": "getAllPositions",
+    "initial_status": "implemented",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      }
+    ],
+    "description": "Returns all open\u00a0positions\u00a0for the active\u00a0account",
+    "response_examples": [
+      {
+        "positions": [
+          {
+            "position": {
+              "contractSize": 1,
+              "createdDate": "2022-04-05T12:46:01.872",
+              "createdDateUTC": "2022-04-05T09:46:01.872",
+              "dealId": "00018387-0001-54c4-0000-000080560014",
+              "dealReference": "p_00018387-0001-54c4-0000-000080560014",
+              "workingOrderId": "00018387-0001-54c4-0000-000080560012",
+              "size": 10,
+              "leverage": 20,
+              "upl": -0.05,
+              "direction": "BUY",
+              "level": 2.764,
+              "currency": "USD",
+              "guaranteedStop": false
+            },
+            "market": {
+              "instrumentName": "Natural Gas",
+              "expiry": "-",
+              "marketStatus": "TRADEABLE",
+              "epic": "NATURALGAS",
+              "symbol": "Natural Gas",
+              "instrumentType": "COMMODITIES",
+              "lotSize": 1,
+              "high": 2.798,
+              "low": 2.743,
+              "percentageChange": 0.8053,
+              "netChange": 0.022,
+              "bid": 2.759,
+              "offer": 2.764,
+              "updateTime": "2022-04-05T17:41:38.492",
+              "updateTimeUTC": "2022-04-05T14:41:38.492",
+              "delayTime": 0,
+              "streamingPricesAvailable": true,
+              "scalingFactor": 1,
+              "marketModes": [
+                "REGULAR"
+              ]
+            }
+          },
+          {
+            "position": {
+              "contractSize": 1,
+              "createdDate": "2022-04-05T12:46:10.139",
+              "createdDateUTC": "2022-04-05T09:46:10.139",
+              "dealId": "004d0627-0001-54c4-0000-000080560017",
+              "dealReference": "p_004d0627-0001-54c4-0000-000080560017",
+              "workingOrderId": "004d0627-0001-54c4-0000-000080560015",
+              "size": 1,
+              "leverage": 20,
+              "upl": -0.8,
+              "direction": "BUY",
+              "level": 3985.1,
+              "currency": "USD",
+              "guaranteedStop": false
+            },
+            "market": {
+              "instrumentName": "S&P 500",
+              "expiry": "2022-02-01",
+              "marketStatus": "TRADEABLE",
+              "epic": "US500",
+              "symbol": "US500",
+              "instrumentType": "INDICES",
+              "lotSize": 1,
+              "high": 3984.6,
+              "low": 3950.3,
+              "percentageChange": -0.0301,
+              "netChange": -1.2,
+              "bid": 3984.3,
+              "offer": 3985.1,
+              "updateTime": "2022-04-05T17:41:37.991",
+              "updateTimeUTC": "2022-04-05T14:41:37.991",
+              "delayTime": 0,
+              "streamingPricesAvailable": true,
+              "scalingFactor": 1,
+              "marketModes": [
+                "REGULAR"
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/api/v1/positions",
+    "python_method": "createPosition",
+    "initial_status": "partial",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      }
+    ],
+    "description": "Create orders and positions\n\nPlease note that when creating the position an order is created first with the 'o_' prefix in the `dealReference` parameter\n\nList of request body parameters:\n\n| **Parameter** | **Format** | **Required?** | **Description** |\n| --- | --- | --- | --- |\n| direction | string | YES | Deal direction  <br>  <br>Must be `BUY` or `SELL` |\n| epic | string | YES | Instrument epic identifier |\n| size | number | YES | Deal size |\n| guaranteedStop | boolean | NO | Must be `true` if a guaranteed stop is required  <br>  <br>Notes:  <br>\\- Default value: `false`  <br>\\- If `guaranteedStop` equals `true`, then set `stopLevel`, `stopDistance` or `stopAmount`  <br>\\- Cannot be set if `trailingStop` is `true`  <br>\\- Cannot be set if `hedgingMode` is `true` |\n| trailingStop | boolean | NO | Must be `true` if a trailing stop is required  <br>  <br>Notes:  <br>\\- Default value: `false`  <br>\\- If `trailingStop` equals `true`, then set `stopDistance`  <br>\\- Cannot be set if `guaranteedStop` is `true` |\n| stopLevel | number | NO | Price level when a stop loss will be triggered |\n| stopDistance | number | NO | Distance between current and stop loss triggering price  <br>  <br>Notes:  <br>\\- Required parameter if `trailingStop` is `true` |\n| stopAmount | number | NO | Loss amount when a stop loss will be triggered |\n| profitLevel | number | NO | Price level when a take profit will be triggered |\n| profitDistance | number | NO | Distance between current and take profit triggering price |\n| profitAmount | number | NO | Profit amount when a take profit will be triggered |",
+    "response_examples": [
+      {
+        "dealReference": "o_98c0de50-9cd5-4481-8d81-890c525eeb49"
+      },
+      {
+        "dealReference": "o_bad96cc0-d297-46cd-ab44-dbcda73d7921"
+      }
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/v1/positions/{dealId}",
+    "python_method": "getsinglePosition",
+    "initial_status": "implemented",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      },
+      {
+        "name": "dealId",
+        "in": "path",
+        "schema": {
+          "type": "string"
+        },
+        "required": true,
+        "description": "Permanent deal reference for a confirmed trade",
+        "example": "{{dealId}}"
+      }
+    ],
+    "description": "Returns an open position for the active account by deal identifier",
+    "response_examples": [
+      {
+        "position": {
+          "contractSize": 1,
+          "createdDate": "2022-04-06T10:49:52.056",
+          "createdDateUTC": "2022-04-06T07:49:52.056",
+          "dealId": "006011e7-0001-54c4-0000-00008056005e",
+          "dealReference": "p_006011e7-0001-54c4-0000-00008056005e",
+          "workingOrderId": "006011e7-0001-54c4-0000-00008056005c",
+          "size": 1,
+          "leverage": 20,
+          "upl": -0.022,
+          "direction": "BUY",
+          "level": 21.059,
+          "currency": "USD",
+          "guaranteedStop": false
+        },
+        "market": {
+          "instrumentName": "Silver",
+          "expiry": "-",
+          "marketStatus": "TRADEABLE",
+          "epic": "SILVER",
+          "symbol": "Natural Gas",
+          "instrumentType": "COMMODITIES",
+          "lotSize": 1,
+          "high": 21.167,
+          "low": 20.823,
+          "percentageChange": 1.8478,
+          "netChange": 0.381,
+          "bid": 21.037,
+          "offer": 21.057,
+          "updateTime": "2022-04-06T10:53:35.389",
+          "updateTimeUTC": "2022-04-06T07:53:35.389",
+          "delayTime": 0,
+          "streamingPricesAvailable": true,
+          "scalingFactor": 1,
+          "marketModes": [
+            "REGULAR"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "method": "put",
+    "path": "/api/v1/positions/{dealId}",
+    "python_method": "updatePosition",
+    "initial_status": "stub",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      },
+      {
+        "name": "dealId",
+        "in": "path",
+        "schema": {
+          "type": "string"
+        },
+        "required": true,
+        "description": "Permanent deal reference for a confirmed trade",
+        "example": "{{dealId}}"
+      }
+    ],
+    "description": "Update the position\n\nList of request body parameters:\n\n| **Parameter** | **Format** | **Required?** | **Description** |\n| --- | --- | --- | --- |\n| guaranteedStop | boolean | NO | Must be `true` if a guaranteed stop is required  <br>  <br>Notes:  <br>\\- Default value: `false`  <br>\\- If `guaranteedStop` equals `true`, then set `stopLevel`, `stopDistance` or `stopAmount`  <br>\\- Cannot be set if `trailingStop` is `true`  <br>\\- Cannot be set if `hedgingMode` is `true` |\n| trailingStop | boolean | NO | Must be `true` if a trailing stop is required  <br>  <br>Notes:  <br>\\- Default value: `false`  <br>\\- If `trailingStop` equals `true`, then set `stopDistance`  <br>\\- Cannot be set if `guaranteedStop` is `true` |\n| stopLevel | number | NO | Price level when a stop loss will be triggered |\n| stopDistance | number | NO | Distance between current and stop loss triggering price  <br>  <br>Notes:  <br>\\- Required parameter if `trailingStop` is `true` |\n| stopAmount | number | NO | Loss amount when a stop loss will be triggered |\n| profitLevel | number | NO | Price level when a take profit will be triggered |\n| profitDistance | number | NO | Distance between current and take profit triggering price |\n| profitAmount | number | NO | Profit amount when a take profit will be triggered |",
+    "response_examples": [
+      {
+        "dealReference": "p_006011e7-0001-54c4-0000-000080560068"
+      }
+    ]
+  },
+  {
+    "method": "delete",
+    "path": "/api/v1/positions/{dealId}",
+    "python_method": "closePosition",
+    "initial_status": "implemented",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      },
+      {
+        "name": "dealId",
+        "in": "path",
+        "schema": {
+          "type": "string"
+        },
+        "required": true,
+        "description": "Permanent deal reference for a confirmed trade",
+        "example": "{{dealId}}"
+      }
+    ],
+    "description": "Close the position",
+    "response_examples": [
+      {
+        "dealReference": "p_006011e7-0001-54c4-0000-000080560068"
+      }
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/v1/workingorders",
+    "python_method": "getAllWorkingOrders",
+    "initial_status": "implemented",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      }
+    ],
+    "description": "Returns all open working orders for the active account",
+    "response_examples": [
+      {
+        "workingOrders": [
+          {
+            "workingOrderData": {
+              "dealId": "006011e7-0001-54c4-0000-000080560078",
+              "direction": "BUY",
+              "epic": "SILVER",
+              "orderSize": 1,
+              "leverage": 10,
+              "orderLevel": 20,
+              "timeInForce": "GOOD_TILL_DATE",
+              "goodTillDate": "2022-06-09T04:01:00.000",
+              "goodTillDateUTC": "2022-06-09T01:01:00.000",
+              "createdDate": "2022-04-06T12:48:28.114",
+              "createdDateUTC": "2022-04-06T09:48:28.114",
+              "guaranteedStop": true,
+              "orderType": "LIMIT",
+              "stopDistance": -3,
+              "profitDistance": 3,
+              "trailingStop": false,
+              "currencyCode": "USD"
+            },
+            "marketData": {
+              "instrumentName": "Silver",
+              "expiry": "-",
+              "marketStatus": "TRADEABLE",
+              "epic": "SILVER",
+              "symbol": "Silver",
+              "instrumentType": "COMMODITIES",
+              "lotSize": 50,
+              "high": 24.398,
+              "low": 24.193,
+              "percentageChange": -0.6198,
+              "netChange": -0.152,
+              "bid": 24.387,
+              "offer": 24.407,
+              "updateTime": "2022-04-06T12:48:31.587",
+              "updateTimeUTC": "2022-04-06T09:48:31.587",
+              "delayTime": 0,
+              "streamingPricesAvailable": true,
+              "scalingFactor": 1,
+              "marketModes": [
+                "REGULAR"
+              ]
+            }
+          },
+          {
+            "workingOrderData": {
+              "dealId": "00018387-0001-54c4-0000-000080560019",
+              "direction": "BUY",
+              "epic": "NATURALGAS",
+              "orderSize": 1,
+              "leverage": 10,
+              "orderLevel": 6,
+              "timeInForce": "GOOD_TILL_CANCELLED",
+              "createdDate": "2022-04-06T12:13:46.571",
+              "createdDateUTC": "2022-04-06T09:13:46.571",
+              "guaranteedStop": false,
+              "orderType": "LIMIT",
+              "trailingStop": false,
+              "currencyCode": "USD"
+            },
+            "marketData": {
+              "instrumentName": "Natural Gas",
+              "expiry": "-",
+              "marketStatus": "TRADEABLE",
+              "epic": "NATURALGAS",
+              "symbol": "Natural Gas",
+              "instrumentType": "COMMODITIES",
+              "lotSize": 1000,
+              "high": 6.194,
+              "low": 6.073,
+              "percentageChange": 6.4472,
+              "netChange": 0.374,
+              "bid": 6.185,
+              "offer": 6.195,
+              "updateTime": "2022-04-06T12:48:24.795",
+              "updateTimeUTC": "2022-04-06T09:48:24.795",
+              "delayTime": 0,
+              "streamingPricesAvailable": true,
+              "scalingFactor": 1,
+              "marketModes": [
+                "REGULAR"
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/api/v1/workingorders",
+    "python_method": "createWorkingOrder",
+    "initial_status": "stub",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      }
+    ],
+    "description": "Create a limit or stop order\n\nList of request body parameters:\n\n| **Parameter** | **Format** | **Required?** | **Description** |\n| --- | --- | --- | --- |\n| direction | string | YES | Order direction  <br>  <br>Must be `BUY` or `SELL` |\n| epic | string | YES | Instrument epic identifier |\n| size | number | YES | Order size |\n| level | number | YES | Order price |\n| type | string | YES | Order type  <br>  <br>Must be `LIMIT` or `STOP` |\n| goodTillDate | string | NO | Order cancellation date in UTC time  <br>  <br>Date format: `YYYY-MM-DDTHH:MM:SS` (e.g. `2022-06-09T01:01:00`) |\n| guaranteedStop | boolean | NO | Must be `true` if a guaranteed stop is required  <br>  <br>Notes:  <br>\\- Default value: `false`  <br>\\- If `guaranteedStop` equals `true`, then set `stopLevel`, `stopDistance` or `stopAmount`  <br>\\- Cannot be set if `trailingStop` is `true`  <br>\\- Cannot be set if `hedgingMode` is `true` |\n| trailingStop | boolean | NO | Must be `true` if a trailing stop is required  <br>  <br>Notes:  <br>\\- Default value: `false`  <br>\\- If `trailingStop` equals `true`, then set `stopDistance`  <br>\\- Cannot be set if `guaranteedStop` is `true` |\n| stopLevel | number | NO | Price level when a stop loss will be triggered |\n| stopDistance | number | NO | Distance between current and stop loss triggering price  <br>  <br>Notes:  <br>\\- Required parameter if `trailingStop` is `true` |\n| stopAmount | number | NO | Loss amount when a stop loss will be triggered |\n| profitLevel | number | NO | Price level when a take profit will be triggered |\n| profitDistance | number | NO | Distance between current and take profit triggering price |\n| profitAmount | number | NO | Profit amount when a take profit will be triggered |",
+    "response_examples": [
+      {
+        "dealReference": "o_307bb379-6dd8-4ea7-8935-faf725f0e0a3"
+      },
+      {
+        "dealReference": "o_d556dcbb-75b5-491f-90ed-6ff899262d05"
+      }
+    ]
+  },
+  {
+    "method": "put",
+    "path": "/api/v1/workingorders/{dealId}",
+    "python_method": "updateWorkingOrder",
+    "initial_status": "stub",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      },
+      {
+        "name": "dealId",
+        "in": "path",
+        "schema": {
+          "type": "string"
+        },
+        "required": true,
+        "description": "Permanent deal reference for an order",
+        "example": "{{dealId}}"
+      }
+    ],
+    "description": "Update a limit or stop order\n\nList of request body parameters:\n\n| **Parameter** | **Format** | **Required?** | **Description** |\n| --- | --- | --- | --- |\n| level | number | NO | Order price |\n| goodTillDate | string | NO | Order cancellation date in UTC time  <br>  <br>Date format: `YYYY-MM-DDTHH:MM:SS` (e.g. `2022-06-09T01:01:00`) |\n| guaranteedStop | boolean | NO | Must be `true` if a guaranteed stop is required  <br>  <br>Notes:  <br>\\- Default value: `false`  <br>\\- If `guaranteedStop` equals `true`, then set `stopLevel`, `stopDistance` or `stopAmount`  <br>\\- Cannot be set if `trailingStop` is `true`  <br>\\- Cannot be set if `hedgingMode` is `true` |\n| trailingStop | boolean | NO | Must be `true` if a trailing stop is required  <br>  <br>Notes:  <br>\\- Default value: `false`  <br>\\- If `trailingStop` equals `true`, then set `stopDistance`  <br>\\- Cannot be set if `guaranteedStop` is `true` |\n| stopLevel | number | NO | Price level when a stop loss will be triggered |\n| stopDistance | number | NO | Distance between current and stop loss triggering price  <br>  <br>Notes:  <br>\\- Required parameter if `trailingStop` is `true` |\n| stopAmount | number | NO | Loss amount when a stop loss will be triggered |\n| profitLevel | number | NO | Price level when a take profit will be triggered |\n| profitDistance | number | NO | Distance between current and take profit triggering price |\n| profitAmount | number | NO | Profit amount when a take profit will be triggered |",
+    "response_examples": [
+      {
+        "dealReference": "o_56e73aad-45fe-4058-a05b-569b1a6e8ba0"
+      }
+    ]
+  },
+  {
+    "method": "delete",
+    "path": "/api/v1/workingorders/{dealId}",
+    "python_method": "deleteWorkingOrder",
+    "initial_status": "stub",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      },
+      {
+        "name": "dealId",
+        "in": "path",
+        "schema": {
+          "type": "string"
+        },
+        "required": true,
+        "description": "Permanent deal reference for an order",
+        "example": "{{dealId}}"
+      }
+    ],
+    "description": "Delete a limit or stop order",
+    "response_examples": [
+      {
+        "dealReference": "o_38323f0c-241a-43b3-8edf-a75d2ae989a5"
+      }
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/v1/confirms/{dealReference}",
+    "python_method": "getPositionOrderConfirmation",
+    "initial_status": "implemented",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      },
+      {
+        "name": "dealReference",
+        "in": "path",
+        "schema": {
+          "type": "string"
+        },
+        "required": true,
+        "description": "Deal reference for an unconfirmed trade",
+        "example": "{{dealReference}}"
+      }
+    ],
+    "description": "Returns a deal confirmation for the given deal reference\n\nIn case of mentioning the order prefix formed because of the position creation the opened positions IDs will be shown in the `affectedDeals` array",
+    "response_examples": [
+      {
+        "date": "2022-04-06T07:32:19.193",
+        "status": "OPEN",
+        "dealStatus": "ACCEPTED",
+        "epic": "SILVER",
+        "dealReference": "o_fcc7e6c0-c150-48aa-bf66-d6c6da071f1a",
+        "dealId": "006011e7-0001-54c4-0000-000080560043",
+        "affectedDeals": [
+          {
+            "dealId": "006011e7-0001-54c4-0000-000080560045",
+            "status": "OPENED"
+          }
+        ],
+        "level": 24.285,
+        "size": 1,
+        "direction": "BUY",
+        "guaranteedStop": false,
+        "trailingStop": false
+      }
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/v1/marketnavigation",
+    "python_method": "getAllTopLevelMarketCategories",
+    "initial_status": "implemented",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      }
+    ],
+    "description": "Returns all top-level nodes (market categories) in the market navigation hierarchy",
+    "response_examples": [
+      {
+        "nodes": [
+          {
+            "id": "hierarchy_v1.commons_group",
+            "name": "commons_group"
+          },
+          {
+            "id": "hierarchy_v1.commodities_group",
+            "name": "commodities_group"
+          },
+          {
+            "id": "hierarchy_v1.oil_markets_group",
+            "name": "oil_markets_group"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/v1/marketnavigation/{nodeId}",
+    "python_method": "getAllCategorySubNodes",
+    "initial_status": "partial",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      },
+      {
+        "name": "limit",
+        "in": "query",
+        "schema": {
+          "type": "integer"
+        },
+        "description": "The maximum number of the markets in answer. Default = 500, max = 500",
+        "example": "500"
+      },
+      {
+        "name": "nodeId",
+        "in": "path",
+        "schema": {
+          "type": "string"
+        },
+        "required": true,
+        "description": "Identifier of the node to browse",
+        "example": "{{nodeId}}"
+      }
+    ],
+    "description": "Returns all sub-nodes (markets) of the given node (market category) in the market navigation hierarchy",
+    "response_examples": [
+      {
+        "nodes": [
+          {
+            "id": "hierarchy_v1.commons.most_traded",
+            "name": "Most Traded"
+          },
+          {
+            "id": "hierarchy_v1.commons.recently_traded",
+            "name": "Recently Traded"
+          },
+          {
+            "id": "hierarchy_v1.commons.new",
+            "name": "New"
+          },
+          {
+            "id": "hierarchy_v1.commons.top_gainers",
+            "name": "Top Risers"
+          },
+          {
+            "id": "hierarchy_v1.commons.top_losers",
+            "name": "Top Fallers"
+          },
+          {
+            "id": "hierarchy_v1.commons.most_volatile",
+            "name": "Most Volatile"
+          },
+          {
+            "id": "hierarchy_v1.commons.weekend_trading",
+            "name": "Weekend Trading"
+          }
+        ]
+      },
+      {
+        "nodes": [],
+        "markets": [
+          {
+            "delayTime": 0,
+            "epic": "NATURALGAS",
+            "symbol": "Natural Gas",
+            "netChange": 0.389,
+            "lotSize": 1,
+            "expiry": "-",
+            "instrumentType": "COMMODITIES",
+            "instrumentName": "Natural Gas",
+            "high": 6.212,
+            "low": 6.073,
+            "percentageChange": 6.7057,
+            "updateTime": "2022-04-06T13:13:14.765",
+            "updateTimeUTC": "2022-04-06T11:13:14.765",
+            "bid": 6.223,
+            "offer": 6.229,
+            "streamingPricesAvailable": true,
+            "marketStatus": "TRADEABLE",
+            "scalingFactor": 1,
+            "marketModes": [
+              "REGULAR"
+            ],
+            "pipPosition": 2,
+            "tickSize": 0.001
+          },
+          {
+            "delayTime": 0,
+            "epic": "SILVER",
+            "symbol": "Silver",
+            "netChange": -0.266,
+            "lotSize": 1,
+            "expiry": "-",
+            "instrumentType": "COMMODITIES",
+            "instrumentName": "Silver",
+            "high": 24.405,
+            "low": 24.193,
+            "percentageChange": -1.0846,
+            "updateTime": "2022-04-06T13:13:14.069",
+            "updateTimeUTC": "2022-04-06T11:13:14.069",
+            "bid": 24.23,
+            "offer": 24.25,
+            "streamingPricesAvailable": true,
+            "marketStatus": "TRADEABLE",
+            "scalingFactor": 1,
+            "marketModes": [
+              "REGULAR"
+            ],
+            "pipPosition": 2,
+            "tickSize": 0.001
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/v1/markets",
+    "python_method": "getMarketsDetails",
+    "initial_status": "partial",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      },
+      {
+        "name": "searchTerm",
+        "in": "query",
+        "schema": {
+          "type": "string"
+        },
+        "description": "The term to be used in the search. Has higher priority, than 'epics' parameter meaning that in case both searchTerm and epic are mentioned only searchTerm is taken into consideration.",
+        "example": "silver"
+      },
+      {
+        "name": "epics",
+        "in": "query",
+        "schema": {
+          "type": "string"
+        },
+        "description": "The epics of the market, separated by a comma. Max number of epics is limited to 50",
+        "example": "SILVER,NATURALGAS"
+      }
+    ],
+    "description": "Returns the details of all or specific markets\n\nIf query parameters are not specified in the request, the list of all available markets will be returned\n\nRequest can include one of the query parameters: `searchTerm` or `epics`\n\nIf both `searchTerm` or `epics` parameters are specified in the request, only `searchTerm` will be used (due to higher priority)",
+    "response_examples": [
+      {
+        "markets": [
+          {
+            "delayTime": 0,
+            "epic": "SILVER",
+            "symbol": "Silver",
+            "netChange": -0.219,
+            "lotSize": 1,
+            "expiry": "-",
+            "instrumentType": "COMMODITIES",
+            "instrumentName": "Silver",
+            "high": 24.405,
+            "low": 24.119,
+            "percentageChange": -0.8929,
+            "updateTime": "2022-04-06T15:17:38.477",
+            "updateTimeUTC": "2022-04-06T13:17:38.477",
+            "bid": 24.366,
+            "offer": 24.386,
+            "streamingPricesAvailable": true,
+            "marketStatus": "TRADEABLE",
+            "scalingFactor": 1,
+            "marketModes": [
+              "REGULAR"
+            ],
+            "pipPosition": 2,
+            "tickSize": 0.001
+          },
+          {
+            "delayTime": 0,
+            "epic": "5CPSG",
+            "symbol": "5CPsg",
+            "netChange": 0.005,
+            "lotSize": 1,
+            "expiry": "-",
+            "instrumentType": "SHARES",
+            "instrumentName": "Silverlake Axis",
+            "high": 0.318,
+            "low": 0.313,
+            "percentageChange": 1.5974,
+            "updateTime": "2022-04-06T11:00:00.440",
+            "updateTimeUTC": "2022-04-06T09:00:00.440",
+            "bid": 0.318,
+            "offer": 0.327,
+            "streamingPricesAvailable": true,
+            "marketStatus": "CLOSED",
+            "scalingFactor": 1,
+            "marketModes": [
+              "VIEW_ONLY"
+            ],
+            "pipPosition": 2,
+            "tickSize": 0.001
+          }
+        ]
+      },
+      {
+        "marketDetails": [
+          {
+            "instrument": {
+              "epic": "SILVER",
+              "symbol": "Silver",
+              "expiry": "-",
+              "name": "Silver",
+              "lotSize": 1,
+              "type": "COMMODITIES",
+              "guaranteedStopAllowed": true,
+              "streamingPricesAvailable": true,
+              "currency": "USD",
+              "marginFactor": 10,
+              "marginFactorUnit": "PERCENTAGE",
+              "openingHours": {
+                "mon": [
+                  "00:00 - 21:59",
+                  "23:05 - 00:00"
+                ],
+                "tue": [
+                  "00:00 - 21:59",
+                  "23:05 - 00:00"
+                ],
+                "wed": [
+                  "00:00 - 21:59",
+                  "23:05 - 00:00"
+                ],
+                "thu": [
+                  "00:00 - 21:59",
+                  "23:05 - 00:00"
+                ],
+                "fri": [
+                  "00:00 - 21:59"
+                ],
+                "sat": [],
+                "sun": [
+                  "23:05 - 00:00"
+                ],
+                "zone": "UTC"
+              },
+              "overnightFee": {
+                "longRate": -0.0199715,
+                "shortRate": 0.0117515,
+                "swapChargeTimestamp": 1707948000000,
+                "swapChargeInterval": 1440
+              }
+            },
+            "dealingRules": {
+              "minStepDistance": {
+                "unit": "POINTS",
+                "value": 0.001
+              },
+              "minDealSize": {
+                "unit": "POINTS",
+                "value": 1
+              },
+              "maxDealSize": {
+                "unit": "POINTS",
+                "value": 100000
+              },
+              "minSizeIncrement": {
+                "unit": "POINTS",
+                "value": 0.1
+              },
+              "minGuaranteedStopDistance": {
+                "unit": "PERCENTAGE",
+                "value": 1
+              },
+              "minStopOrProfitDistance": {
+                "unit": "PERCENTAGE",
+                "value": 0.01
+              },
+              "maxStopOrProfitDistance": {
+                "unit": "PERCENTAGE",
+                "value": 60
+              },
+              "marketOrderPreference": "AVAILABLE_DEFAULT_ON",
+              "trailingStopsPreference": "NOT_AVAILABLE"
+            },
+            "snapshot": {
+              "marketStatus": "TRADEABLE",
+              "netChange": -0.627,
+              "percentageChange": -0.24,
+              "updateTime": "2022-04-06T11:21:55.542",
+              "delayTime": 0,
+              "bid": 22.046,
+              "offer": 22.066,
+              "high": 22.098,
+              "low": 21.926,
+              "decimalPlacesFactor": 3,
+              "scalingFactor": 1,
+              "marketModes": [
+                "REGULAR"
+              ]
+            }
+          },
+          {
+            "instrument": {
+              "epic": "NATURALGAS",
+              "symbol": "Natural Gas",
+              "expiry": "-",
+              "name": "Natural Gas",
+              "lotSize": 1,
+              "type": "COMMODITIES",
+              "guaranteedStopAllowed": true,
+              "streamingPricesAvailable": true,
+              "currency": "USD",
+              "marginFactor": 10,
+              "marginFactorUnit": "PERCENTAGE",
+              "openingHours": {
+                "mon": [
+                  "00:00 - 22:00",
+                  "23:05 - 00:00"
+                ],
+                "tue": [
+                  "00:00 - 22:00",
+                  "23:05 - 00:00"
+                ],
+                "wed": [
+                  "00:00 - 22:00",
+                  "23:05 - 00:00"
+                ],
+                "thu": [
+                  "00:00 - 22:00",
+                  "23:05 - 00:00"
+                ],
+                "fri": [
+                  "00:00 - 22:00"
+                ],
+                "sat": [],
+                "sun": [
+                  "23:05 - 00:00"
+                ],
+                "zone": "UTC"
+              },
+              "country": "",
+              "overnightFee": {
+                "longRate": -0.0934192,
+                "shortRate": 0.0714992,
+                "swapChargeTimestamp": 1707948000000,
+                "swapChargeInterval": 1440
+              }
+            },
+            "dealingRules": {
+              "minStepDistance": {
+                "unit": "POINTS",
+                "value": 0.0001
+              },
+              "minDealSize": {
+                "unit": "POINTS",
+                "value": 10
+              },
+              "maxDealSize": {
+                "unit": "POINTS",
+                "value": 2000000
+              },
+              "minSizeIncrement": {
+                "unit": "POINTS",
+                "value": 0.1
+              },
+              "minGuaranteedStopDistance": {
+                "unit": "PERCENTAGE",
+                "value": 3
+              },
+              "minStopOrProfitDistance": {
+                "unit": "PERCENTAGE",
+                "value": 0.1
+              },
+              "maxStopOrProfitDistance": {
+                "unit": "PERCENTAGE",
+                "value": 30
+              },
+              "marketOrderPreference": "AVAILABLE_DEFAULT_ON",
+              "trailingStopsPreference": "NOT_AVAILABLE"
+            },
+            "snapshot": {
+              "marketStatus": "TRADEABLE",
+              "netChange": -0.077,
+              "percentageChange": -0.06,
+              "updateTime": "2022-04-06T11:21:55.357",
+              "delayTime": 0,
+              "bid": 1.698,
+              "offer": 1.703,
+              "high": 1.719,
+              "low": 1.693,
+              "decimalPlacesFactor": 4,
+              "scalingFactor": 1,
+              "marketModes": [
+                "REGULAR"
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/v1/markets/{epic}",
+    "python_method": "getSingleMarketDetails",
+    "initial_status": "implemented",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      },
+      {
+        "name": "epic",
+        "in": "path",
+        "schema": {
+          "type": "string"
+        },
+        "required": true,
+        "description": "The epic of the market",
+        "example": "{{epic}}"
+      }
+    ],
+    "description": "Returns the details of the given\u00a0market",
+    "response_examples": [
+      {
+        "instrument": {
+          "epic": "SILVER",
+          "symbol": "Silver",
+          "expiry": "-",
+          "name": "Silver",
+          "lotSize": 1,
+          "type": "COMMODITIES",
+          "guaranteedStopAllowed": true,
+          "streamingPricesAvailable": true,
+          "currency": "USD",
+          "marginFactor": 10,
+          "marginFactorUnit": "PERCENTAGE",
+          "openingHours": {
+            "mon": [
+              "00:00 - 21:59",
+              "23:05 - 00:00"
+            ],
+            "tue": [
+              "00:00 - 21:59",
+              "23:05 - 00:00"
+            ],
+            "wed": [
+              "00:00 - 21:59",
+              "23:05 - 00:00"
+            ],
+            "thu": [
+              "00:00 - 21:59",
+              "23:05 - 00:00"
+            ],
+            "fri": [
+              "00:00 - 21:59"
+            ],
+            "sat": [],
+            "sun": [
+              "23:05 - 00:00"
+            ],
+            "zone": "UTC"
+          },
+          "overnightFee": {
+            "longRate": -0.0199715,
+            "shortRate": 0.0117515,
+            "swapChargeTimestamp": 1707948000000,
+            "swapChargeInterval": 1440
+          }
+        },
+        "dealingRules": {
+          "minStepDistance": {
+            "unit": "POINTS",
+            "value": 0.001
+          },
+          "minDealSize": {
+            "unit": "POINTS",
+            "value": 1
+          },
+          "maxDealSize": {
+            "unit": "POINTS",
+            "value": 100000
+          },
+          "minSizeIncrement": {
+            "unit": "POINTS",
+            "value": 0.1
+          },
+          "minGuaranteedStopDistance": {
+            "unit": "PERCENTAGE",
+            "value": 1
+          },
+          "minStopOrProfitDistance": {
+            "unit": "PERCENTAGE",
+            "value": 0.01
+          },
+          "maxStopOrProfitDistance": {
+            "unit": "PERCENTAGE",
+            "value": 60
+          },
+          "marketOrderPreference": "AVAILABLE_DEFAULT_ON",
+          "trailingStopsPreference": "NOT_AVAILABLE"
+        },
+        "snapshot": {
+          "marketStatus": "TRADEABLE",
+          "netChange": -0.627,
+          "percentageChange": -0.27,
+          "updateTime": "2022-04-06T11:23:00.955",
+          "delayTime": 0,
+          "bid": 22.041,
+          "offer": 22.061,
+          "high": 22.098,
+          "low": 21.926,
+          "decimalPlacesFactor": 3,
+          "scalingFactor": 1,
+          "marketModes": [
+            "REGULAR"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/v1/prices/{epic}",
+    "python_method": "getHistoricalPrices",
+    "initial_status": "partial",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      },
+      {
+        "name": "resolution",
+        "in": "query",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Defines the resolution of requested prices. Possible values are MINUTE, MINUTE_5, MINUTE_15, MINUTE_30, HOUR, HOUR_4, DAY, WEEK",
+        "example": "MINUTE"
+      },
+      {
+        "name": "max",
+        "in": "query",
+        "schema": {
+          "type": "integer"
+        },
+        "description": "The maximum number of the values in answer. Default = 10, max = 1000",
+        "example": "10"
+      },
+      {
+        "name": "from",
+        "in": "query",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Start date. Date format: YYYY-MM-DDTHH:MM:SS (e.g. 2022-04-01T01:01:00). Filtration by date based on snapshotTimeUTC parameter",
+        "example": "2022-02-24T00:00:00"
+      },
+      {
+        "name": "to",
+        "in": "query",
+        "schema": {
+          "type": "string"
+        },
+        "description": "End date. Date format: YYYY-MM-DDTHH:MM:SS (e.g. 2022-04-01T01:01:00). Filtration by date based on snapshotTimeUTC parameter",
+        "example": "2022-02-24T01:00:00"
+      },
+      {
+        "name": "epic",
+        "in": "path",
+        "schema": {
+          "type": "string"
+        },
+        "required": true,
+        "description": "Instrument epic",
+        "example": "{{epic}}"
+      }
+    ],
+    "description": "Returns historical prices for a particular instrument\n\nAll query parameters are optional for this request\n\nBy default returns the minute prices within the last 10 minutes",
+    "response_examples": [
+      {
+        "prices": [
+          {
+            "snapshotTime": "2022-04-06T15:18:00",
+            "snapshotTimeUTC": "2022-04-06T13:18:00",
+            "openPrice": {
+              "bid": 24.356,
+              "ask": 24.376
+            },
+            "closePrice": {
+              "bid": 24.378,
+              "ask": 24.398
+            },
+            "highPrice": {
+              "bid": 24.378,
+              "ask": 24.398
+            },
+            "lowPrice": {
+              "bid": 24.355,
+              "ask": 24.375
+            },
+            "lastTradedVolume": 187
+          },
+          {
+            "snapshotTime": "2022-04-06T15:19:00",
+            "snapshotTimeUTC": "2022-04-06T13:19:00",
+            "openPrice": {
+              "bid": 24.379,
+              "ask": 24.399
+            },
+            "closePrice": {
+              "bid": 24.379,
+              "ask": 24.399
+            },
+            "highPrice": {
+              "bid": 24.389,
+              "ask": 24.409
+            },
+            "lowPrice": {
+              "bid": 24.373,
+              "ask": 24.393
+            },
+            "lastTradedVolume": 168
+          },
+          {
+            "snapshotTime": "2022-04-06T15:20:00",
+            "snapshotTimeUTC": "2022-04-06T13:20:00",
+            "openPrice": {
+              "bid": 24.378,
+              "ask": 24.398
+            },
+            "closePrice": {
+              "bid": 24.4,
+              "ask": 24.42
+            },
+            "highPrice": {
+              "bid": 24.4,
+              "ask": 24.42
+            },
+            "lowPrice": {
+              "bid": 24.375,
+              "ask": 24.395
+            },
+            "lastTradedVolume": 183
+          },
+          {
+            "snapshotTime": "2022-04-06T15:21:00",
+            "snapshotTimeUTC": "2022-04-06T13:21:00",
+            "openPrice": {
+              "bid": 24.399,
+              "ask": 24.419
+            },
+            "closePrice": {
+              "bid": 24.395,
+              "ask": 24.415
+            },
+            "highPrice": {
+              "bid": 24.405,
+              "ask": 24.425
+            },
+            "lowPrice": {
+              "bid": 24.388,
+              "ask": 24.408
+            },
+            "lastTradedVolume": 196
+          },
+          {
+            "snapshotTime": "2022-04-06T15:22:00",
+            "snapshotTimeUTC": "2022-04-06T13:22:00",
+            "openPrice": {
+              "bid": 24.394,
+              "ask": 24.414
+            },
+            "closePrice": {
+              "bid": 24.399,
+              "ask": 24.419
+            },
+            "highPrice": {
+              "bid": 24.4,
+              "ask": 24.42
+            },
+            "lowPrice": {
+              "bid": 24.383,
+              "ask": 24.403
+            },
+            "lastTradedVolume": 171
+          },
+          {
+            "snapshotTime": "2022-04-06T15:23:00",
+            "snapshotTimeUTC": "2022-04-06T13:23:00",
+            "openPrice": {
+              "bid": 24.398,
+              "ask": 24.418
+            },
+            "closePrice": {
+              "bid": 24.381,
+              "ask": 24.401
+            },
+            "highPrice": {
+              "bid": 24.405,
+              "ask": 24.425
+            },
+            "lowPrice": {
+              "bid": 24.38,
+              "ask": 24.4
+            },
+            "lastTradedVolume": 161
+          },
+          {
+            "snapshotTime": "2022-04-06T15:24:00",
+            "snapshotTimeUTC": "2022-04-06T13:24:00",
+            "openPrice": {
+              "bid": 24.38,
+              "ask": 24.4
+            },
+            "closePrice": {
+              "bid": 24.387,
+              "ask": 24.407
+            },
+            "highPrice": {
+              "bid": 24.399,
+              "ask": 24.419
+            },
+            "lowPrice": {
+              "bid": 24.38,
+              "ask": 24.4
+            },
+            "lastTradedVolume": 155
+          },
+          {
+            "snapshotTime": "2022-04-06T15:25:00",
+            "snapshotTimeUTC": "2022-04-06T13:25:00",
+            "openPrice": {
+              "bid": 24.388,
+              "ask": 24.408
+            },
+            "closePrice": {
+              "bid": 24.389,
+              "ask": 24.409
+            },
+            "highPrice": {
+              "bid": 24.393,
+              "ask": 24.413
+            },
+            "lowPrice": {
+              "bid": 24.384,
+              "ask": 24.404
+            },
+            "lastTradedVolume": 118
+          },
+          {
+            "snapshotTime": "2022-04-06T15:26:00",
+            "snapshotTimeUTC": "2022-04-06T13:26:00",
+            "openPrice": {
+              "bid": 24.389,
+              "ask": 24.409
+            },
+            "closePrice": {
+              "bid": 24.373,
+              "ask": 24.393
+            },
+            "highPrice": {
+              "bid": 24.39,
+              "ask": 24.41
+            },
+            "lowPrice": {
+              "bid": 24.37,
+              "ask": 24.39
+            },
+            "lastTradedVolume": 143
+          },
+          {
+            "snapshotTime": "2022-04-06T15:27:00",
+            "snapshotTimeUTC": "2022-04-06T13:27:00",
+            "openPrice": {
+              "bid": 24.372,
+              "ask": 24.392
+            },
+            "closePrice": {
+              "bid": 24.375,
+              "ask": 24.395
+            },
+            "highPrice": {
+              "bid": 24.376,
+              "ask": 24.396
+            },
+            "lowPrice": {
+              "bid": 24.371,
+              "ask": 24.391
+            },
+            "lastTradedVolume": 44
+          }
+        ],
+        "instrumentType": "COMMODITIES"
+      },
+      {
+        "prices": [
+          {
+            "snapshotTime": "2022-02-24T01:00:00",
+            "snapshotTimeUTC": "2022-02-24T00:00:00",
+            "openPrice": {
+              "bid": 24.541,
+              "ask": 24.561
+            },
+            "closePrice": {
+              "bid": 24.527,
+              "ask": 24.547
+            },
+            "highPrice": {
+              "bid": 24.557,
+              "ask": 24.577
+            },
+            "lowPrice": {
+              "bid": 24.522,
+              "ask": 24.542
+            },
+            "lastTradedVolume": 858
+          },
+          {
+            "snapshotTime": "2022-02-24T01:15:00",
+            "snapshotTimeUTC": "2022-02-24T00:15:00",
+            "openPrice": {
+              "bid": 24.526,
+              "ask": 24.546
+            },
+            "closePrice": {
+              "bid": 24.532,
+              "ask": 24.552
+            },
+            "highPrice": {
+              "bid": 24.561,
+              "ask": 24.581
+            },
+            "lowPrice": {
+              "bid": 24.51,
+              "ask": 24.53
+            },
+            "lastTradedVolume": 1005
+          },
+          {
+            "snapshotTime": "2022-02-24T01:30:00",
+            "snapshotTimeUTC": "2022-02-24T00:30:00",
+            "openPrice": {
+              "bid": 24.531,
+              "ask": 24.551
+            },
+            "closePrice": {
+              "bid": 24.57,
+              "ask": 24.59
+            },
+            "highPrice": {
+              "bid": 24.578,
+              "ask": 24.598
+            },
+            "lowPrice": {
+              "bid": 24.531,
+              "ask": 24.551
+            },
+            "lastTradedVolume": 1214
+          },
+          {
+            "snapshotTime": "2022-02-24T01:45:00",
+            "snapshotTimeUTC": "2022-02-24T00:45:00",
+            "openPrice": {
+              "bid": 24.569,
+              "ask": 24.589
+            },
+            "closePrice": {
+              "bid": 24.583,
+              "ask": 24.603
+            },
+            "highPrice": {
+              "bid": 24.587,
+              "ask": 24.607
+            },
+            "lowPrice": {
+              "bid": 24.561,
+              "ask": 24.581
+            },
+            "lastTradedVolume": 771
+          }
+        ],
+        "instrumentType": "COMMODITIES"
+      }
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/v1/clientsentiment",
+    "python_method": "getClientSentimentForMarkets",
+    "initial_status": "stub",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      },
+      {
+        "name": "marketIds",
+        "in": "query",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Comma separated list of market identifiers",
+        "example": "SILVER,NATURALGAS"
+      }
+    ],
+    "description": "Returns the client sentiment for the given market",
+    "response_examples": [
+      {
+        "clientSentiments": [
+          {
+            "marketId": "SILVER",
+            "longPositionPercentage": 91.85,
+            "shortPositionPercentage": 8.15
+          },
+          {
+            "marketId": "NATURALGAS",
+            "longPositionPercentage": 62.97,
+            "shortPositionPercentage": 37.03
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/v1/clientsentiment/{marketId}",
+    "python_method": "getClientSentimentForMarket",
+    "initial_status": "stub",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      },
+      {
+        "name": "marketId",
+        "in": "path",
+        "schema": {
+          "type": "string"
+        },
+        "required": true,
+        "description": "Market identifier",
+        "example": "{{marketId}}"
+      }
+    ],
+    "description": "Returns the client sentiment for the given\u00a0market",
+    "response_examples": [
+      {
+        "marketId": "SILVER",
+        "longPositionPercentage": 91.85,
+        "shortPositionPercentage": 8.15
+      }
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/v1/watchlists",
+    "python_method": "getAllWatchlists",
+    "initial_status": "implemented",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      }
+    ],
+    "description": "Returns all\u00a0watchlists\u00a0belonging to the current user",
+    "response_examples": [
+      {
+        "watchlists": [
+          {
+            "id": "123456",
+            "name": "Hello world",
+            "editable": true,
+            "deleteable": true,
+            "defaultSystemWatchlist": false
+          },
+          {
+            "id": "123457",
+            "name": "watchlist1",
+            "editable": true,
+            "deleteable": true,
+            "defaultSystemWatchlist": false
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/api/v1/watchlists",
+    "python_method": "createWatchlist",
+    "initial_status": "stub",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      }
+    ],
+    "description": "Create a watchlist\n\nList of request body parameters:\n\n| **Parameter** | **Format** | **Required?** | **Description** |\n| --- | --- | --- | --- |\n| name | string | YES | Watchlist name  <br>  <br>Min length = 1  <br>Max length = 20 |\n| epics | array\\[string\\] | NO | List of market epics to be associated with this new watchlist |",
+    "response_examples": [
+      {
+        "watchlistId": "123458",
+        "status": "SUCCESS"
+      },
+      {
+        "watchlistId": "123459",
+        "status": "SUCCESS_NOT_ALL_INSTRUMENTS_ADDED"
+      }
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/v1/watchlists/{watchlistId}",
+    "python_method": "getSingleWatchlist",
+    "initial_status": "stub",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      },
+      {
+        "name": "watchlistId",
+        "in": "path",
+        "schema": {
+          "type": "string"
+        },
+        "required": true,
+        "description": "Identifier of the watchlist",
+        "example": "{{watchlistId}}"
+      }
+    ],
+    "description": "Returns a watchlist for the given watchlist identifier",
+    "response_examples": [
+      {
+        "markets": [
+          {
+            "instrumentName": "Silver",
+            "expiry": "-",
+            "epic": "SILVER",
+            "symbol": "Silver",
+            "instrumentType": "COMMODITIES",
+            "marketStatus": "TRADEABLE",
+            "lotSize": 1,
+            "high": 22.098,
+            "low": 21.926,
+            "percentageChange": -0.27,
+            "netChange": -0.627,
+            "bid": 22.041,
+            "offer": 22.061,
+            "updateTime": "2022-04-06T11:24:09.756",
+            "updateTimeUTC": "2022-04-06T11:24:09.756",
+            "delayTime": 0,
+            "streamingPricesAvailable": true,
+            "scalingFactor": 1,
+            "marketModes": [
+              "REGULAR"
+            ],
+            "pipPosition": 2,
+            "tickSize": 0.001
+          },
+          {
+            "instrumentName": "Natural Gas",
+            "expiry": "-",
+            "epic": "NATURALGAS",
+            "symbol": "Natural Gas",
+            "instrumentType": "COMMODITIES",
+            "marketStatus": "TRADEABLE",
+            "lotSize": 1,
+            "high": 1.719,
+            "low": 1.693,
+            "percentageChange": 0.12,
+            "netChange": -0.077,
+            "bid": 1.701,
+            "offer": 1.706,
+            "updateTime": "2022-04-06T11:24:10.889",
+            "updateTimeUTC": "2022-04-06T11:24:10.889",
+            "delayTime": 0,
+            "streamingPricesAvailable": true,
+            "scalingFactor": 1,
+            "marketModes": [
+              "REGULAR"
+            ],
+            "pipPosition": 3,
+            "tickSize": 0.0001
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "method": "put",
+    "path": "/api/v1/watchlists/{watchlistId}",
+    "python_method": "addMarketToWatchlist",
+    "initial_status": "stub",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      },
+      {
+        "name": "watchlistId",
+        "in": "path",
+        "schema": {
+          "type": "string"
+        },
+        "required": true,
+        "description": "Identifier of the watchlist",
+        "example": "{{watchlistId}}"
+      }
+    ],
+    "description": "Add a market to the watchlist\n\nList of request body parameters:\n\n| **Parameter** | **Format** | **Required?** | **Description** |\n| --- | --- | --- | --- |\n| epic | string | YES | Instrument epic identifier |",
+    "response_examples": [
+      {
+        "status": "SUCCESS"
+      }
+    ]
+  },
+  {
+    "method": "delete",
+    "path": "/api/v1/watchlists/{watchlistId}",
+    "python_method": "deleteWatchlist",
+    "initial_status": "stub",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      },
+      {
+        "name": "watchlistId",
+        "in": "path",
+        "schema": {
+          "type": "string"
+        },
+        "required": true,
+        "description": "Identifier of the watchlist",
+        "example": "{{watchlistId}}"
+      }
+    ],
+    "description": "Delete the watchlist",
+    "response_examples": [
+      {
+        "status": "SUCCESS"
+      }
+    ]
+  },
+  {
+    "method": "delete",
+    "path": "/api/v1/watchlists/{watchlistId}/{epic}",
+    "python_method": "removeMarketFromWatchlist",
+    "initial_status": "stub",
+    "parameters": [
+      {
+        "name": "X-SECURITY-TOKEN",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Account token identifying the client's current account",
+        "example": "ENTER_OBTAINED_SECURITY_TOKEN"
+      },
+      {
+        "name": "CST",
+        "in": "header",
+        "schema": {
+          "type": "string"
+        },
+        "description": "Access token identifying the client",
+        "example": "ENTER_OBTAINED_CST_TOKEN"
+      },
+      {
+        "name": "watchlistId",
+        "in": "path",
+        "schema": {
+          "type": "string"
+        },
+        "required": true,
+        "description": "Identifier of the watchlist",
+        "example": "{{watchlistId}}"
+      },
+      {
+        "name": "epic",
+        "in": "path",
+        "schema": {
+          "type": "string"
+        },
+        "required": true,
+        "description": "Instrument epic identifier",
+        "example": "{{epic}}"
+      }
+    ],
+    "description": "Remove a market from the watchlist",
+    "response_examples": [
+      {
+        "status": "SUCCESS"
+      }
+    ]
+  }
+]

@@ -32,3 +32,7 @@ wheels/
 
 test.txt
 test.json
+
+# Local Capital.com API verification artifacts
+/docs/demo-api*-verification.json
+/docs/api-implementation-report.md

@@ -20,6 +20,7 @@ MESSAGES = {
     "permission_denied_http_403": "HTTP 403: API access was denied.",
     "missing_session_tokens": "Authentication did not provide the required session headers.",
     "authentication_unavailable": "An authenticated API session is required.",
+    "account_verification_failed": "The active account could not be verified after an explicit switch.",
     "invalid_api_response": "The API returned an invalid response.",
 }
 
@@ -31,10 +32,14 @@ class TradingUnavailable(SystemExit):
     Never include the original exception, request, response, or session data.
     """
 
-    def __init__(self, reason, *, mutation=False):
+    def __init__(self, reason, *, mutation=False, broker_code=None):
         if reason not in MESSAGES and reason not in {f"http_{n}" for n in range(300, 600)}:
             reason = "network_request_failed"
         self.reason = reason
+        self.outcome_uncertain = mutation
+        self.status_code = int(reason[5:]) if reason.startswith('http_') else (401 if reason.endswith('401') else 403 if reason.endswith('403') else None)
+        from trading_bot.api.errors import KNOWN_BROKER_ERRORS
+        self.broker_code = broker_code if broker_code in KNOWN_BROKER_ERRORS else None
         message = MESSAGES.get(reason, f"API request failed with HTTP {reason.removeprefix('http_')}.")
         message += " Trading stopped; no automatic retry."
         if mutation:
