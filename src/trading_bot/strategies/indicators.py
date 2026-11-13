@@ -1,5 +1,8 @@
+from __future__ import annotations
 import math
-from trading_bot.api.client import TradingApi
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from trading_bot.api.client import TradingApi
 from typing import Any, List
 
 def _validate_period(period: int, minimum: int = 1) -> None:
@@ -116,16 +119,18 @@ def calculate_multiple(tradingApi: TradingApi, symbol: str, time_frame: str)->st
     else:
         return "Neutral"
 
-def calculate_hma_result(tradingApi: TradingApi, symbol: str, time_frame: str, hma_period: int)->str:
-    prices = tradingApi.getHistoricalPricesList(symbol, time_frame, hma_period * 3)
+def hma_signal(prices: list[float], hma_period: int) -> str:
+    """The live HMA slope rule; a flat slope is SELL, preserving existing behavior."""
     hma_values = calculate_hma(prices, hma_period)
     if len(hma_values) < 2:
         raise ValueError("Not enough history for an HMA slope signal")
+    return "BUY" if hma_values[-2] < hma_values[-1] else "SELL"
 
-    if hma_values[-2] < hma_values[-1]:
-        return "BUY"
-    else:
-        return "SELL"
+
+def calculate_hma_result(tradingApi: TradingApi, symbol: str, time_frame: str, hma_period: int)->str:
+    prices = tradingApi.getHistoricalPricesList(symbol, time_frame, hma_period * 3)
+    return hma_signal(prices, hma_period)
+
 
 def calculate_two_ema_result(tradingApi: TradingApi, symbol: str, time_frame: str, long_period: int, short_period: int)->str:
     prices = tradingApi.getHistoricalPricesList(symbol, time_frame, long_period)

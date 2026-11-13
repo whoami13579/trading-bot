@@ -119,19 +119,11 @@ class HmaBacktestTests(unittest.TestCase):
 
 
 class BacktestCommandTests(unittest.TestCase):
-    def test_cli_only_fetches_history_and_never_arms_or_places_orders(self):
-        api = Mock()
-        api.getHistoricalPrices.return_value = ({"prices": [
-            {"openPrice": {"ask": i + 1}} for i in range(100)]}, 200)
-        with patch.object(command, "create_trading_api", return_value=api) as create, \
-             patch("sys.stdout", new_callable=io.StringIO) as output:
-            self.assertEqual(command.main(["--REAL", "--account", "synthetic-account"]), 0)
-        self.assertFalse(create.call_args.kwargs["order_execution"])
-        self.assertTrue(create.call_args.args[0].real)
-        api.getHistoricalPrices.assert_called_once_with("EURUSD", "MINUTE_15", 1000)
-        self.assertEqual([call[0] for call in api.mock_calls], ["getHistoricalPrices"])
-        self.assertIn("quote-price units", output.getvalue())
-        self.assertIn("Remaining simulated position: BUY", output.getvalue())
+    def test_cli_rejects_broker_options_without_authentication(self):
+        with patch("trading_bot.config.trading_config.create_trading_api") as create, \
+             patch("sys.stderr", new_callable=io.StringIO), self.assertRaises(SystemExit):
+            command.main(["--REAL", "--account", "synthetic-account"])
+        create.assert_not_called()
 
     def test_failed_history_is_rejected_instead_of_simulated(self):
         api = Mock()

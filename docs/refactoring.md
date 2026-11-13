@@ -173,7 +173,7 @@ was returned to its initial clean state without changing working-tree files.
 | `sma.py` | `src/trading_bot/strategies/sma.py` | Import alias and CLI wrapper |
 | `test_api_key.py` | `src/trading_bot/tools/demo_roundtrip.py` | Import alias and CLI wrapper |
 | `test_live_api.py` | `src/trading_bot/tools/live_preflight.py` | Import alias and CLI wrapper |
-| `test_strategy.py` | `src/trading_bot/tools/backtest.py` | Import alias and CLI wrapper |
+| `test_strategy.py` | `src/trading_bot/tools/history_probe.py` | Import alias and CLI wrapper; retained broker-history diagnostic |
 | `tradingPosition.py` | `src/trading_bot/api/models.py` | Import alias |
 
 All production package imports now use `trading_bot.*`. Legacy aliases replace

@@ -9,6 +9,7 @@ dependencies = [
     "python-dotenv>=1.2.1",
     "requests>=2.32.5",
     "websockets>=15,<18",
+    "yfinance>=0.2.66,<2",
 ]
 
 [build-system]

@@ -1,4 +1,3 @@
-from trading_bot.api.client import TradingApi
 from trading_bot.config.trading_config import add_trading_arguments, create_trading_api
 from trading_bot.strategies.indicators import calculate_hma_result
 from trading_bot.utils.colors import colors
@@ -15,14 +14,27 @@ DEFAULT_DIRECTION = "BUY"
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(allow_abbrev=False)
     add_trading_arguments(parser)
-    parser.add_argument("--hma_period", type=int)
-    parser.add_argument("--time_frame", type=str)
+    from trading_bot.backtesting.cli import SIMULATION_OPTIONS, add_arguments, execute
+    from trading_bot.backtesting.timeframes import MINUTES
+    add_arguments(parser)
+    parser.add_argument("--hma_period", "--hma-period", type=int)
+    parser.add_argument("--time_frame", "--time-frame", choices=MINUTES)
     parser.add_argument("--days", type=int)
     parser.add_argument("--direction", type=str)
 
     args = parser.parse_args()
+    if args.backtest:
+        status = execute(args, parser)
+        if status:
+            raise SystemExit(status)
+        return
+    import sys
+    if any(option.split("=", 1)[0] in SIMULATION_OPTIONS for option in sys.argv[1:]):
+        parser.error("Historical data/account assumptions require --backtest")
+    if args.time_frame and args.time_frame not in ("MINUTE", "MINUTE_5", "MINUTE_15", "MINUTE_30"):
+        parser.error("This candle timeframe is supported only with --backtest")
     QUANTITY = args.size
     SYMBOL = args.symbol
 

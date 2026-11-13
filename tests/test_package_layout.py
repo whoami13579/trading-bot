@@ -13,7 +13,7 @@ from trading_bot.config.paths import ROOT
 # Every former implementation path remains importable, including test.py's imports.
 LEGACY = {
     "TradingApi": "api.client", "tradingPosition": "api.models",
-    "main": "strategies.moving_average", "test_strategy": "tools.backtest",
+    "main": "strategies.moving_average", "test_strategy": "tools.history_probe",
     "sma": "strategies.sma", "hma": "strategies.hma", "ema_hma": "strategies.ema_hma",
     "multiple_hma": "strategies.multiple_hma", "indicators": "strategies.indicators",
     "colors": "utils.colors", "scheduler": "utils.scheduler", "ping_service": "tools.ping_service",

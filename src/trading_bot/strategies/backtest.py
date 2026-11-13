@@ -1,13 +1,19 @@
-"""Offline HMA simulation using chronological open quotes and one-unit positions.
+"""Deprecated quote-buffer API, adapted to the shared historical execution engine.
 
-Signals see only the current/past quotes. Fills assume the observed quote without
-slippage; results are gross quote-price differences, not broker-realized money.
-An open final position is marked separately and is never silently liquidated.
+These compatibility calls retain one-unit, same-observation fills and two-sided
+reversals. New backtesting commands use next-open fills and the live HMA side/flat
+rule. No separate accounting or execution engine is maintained here.
 """
-from dataclasses import dataclass
-import math
 
-from trading_bot.strategies.indicators import calculate_hma, calculate_wma
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+import math
+from trading_bot.strategies.indicators import (
+    calculate_hma,
+    calculate_wma as calculate_wma,
+)
+from trading_bot.backtesting.engine import Ledger, SimulationConfig, run
+from trading_bot.backtesting.models import Candle, OHLC
 
 SYMBOL = "EURUSD"
 HMA_PERIOD = 20
@@ -21,6 +27,12 @@ def _price(value):
     return value
 
 
+def _candle(price, index=0):
+    stamp = datetime(2000, 1, 1, tzinfo=timezone.utc) + timedelta(minutes=index)
+    price = _price(price)
+    return Candle(stamp, OHLC(price, price, price, price), SYMBOL, "MINUTE", "legacy")
+
+
 @dataclass(frozen=True)
 class ClosedTrade:
     direction: str
@@ -30,25 +42,38 @@ class ClosedTrade:
 
 
 class Portfolio:
-    """A signal targets one direction; repeated signals never toggle a position."""
-
     def __init__(self):
-        self.direction = None
-        self.price = None
-        self.balance = 0.0
-        self.trades = []
+        self._ledger = Ledger(SimulationConfig(0, 1, legacy_unfunded=True))
+        self._index = 0
+
+    @property
+    def direction(self):
+        return self._ledger.position.direction if self._ledger.position else None
+
+    @property
+    def price(self):
+        return (
+            float(self._ledger.position.entry_price) if self._ledger.position else None
+        )
+
+    @property
+    def balance(self):
+        return float(self._ledger.balance)
+
+    @property
+    def trades(self):
+        return [
+            ClosedTrade(
+                t.direction, float(t.entry_price), float(t.exit_price), float(t.net_pnl)
+            )
+            for t in self._ledger.trades
+        ]
 
     def target(self, direction, price):
-        price = _price(price)
         if direction not in ("BUY", "SELL"):
             raise ValueError("Backtest direction must be BUY or SELL")
-        if self.direction == direction:
-            return
-        if self.direction is not None:
-            pnl = (price - self.price) * (1 if self.direction == "BUY" else -1)
-            self.balance += pnl
-            self.trades.append(ClosedTrade(self.direction, self.price, price, pnl))
-        self.direction, self.price = direction, price
+        self._ledger.target(direction, _candle(price, self._index), field="close")
+        self._index += 1
 
     def buy(self, price):
         self.target("BUY", price)
@@ -57,8 +82,7 @@ class Portfolio:
         self.target("SELL", price)
 
     def unrealized(self, price):
-        price = _price(price)
-        return 0.0 if self.direction is None else (price - self.price) * (1 if self.direction == "BUY" else -1)
+        return float(self._ledger.unrealized(_price(price)))
 
 
 @dataclass(frozen=True)
@@ -72,37 +96,54 @@ class BacktestResult:
 
 
 def run_hma_backtest(prices, period=HMA_PERIOD):
-    """Match the legacy three-period rolling warmup and HMA slope rule.
-
-    Flat slopes hold the current position. A reversal closes the prior side and
-    opens the new side at the observed quote; future observations are not read.
-    """
-    if not isinstance(period, int) or isinstance(period, bool) or period < 2:
+    if type(period) is not int or period < 2:
         raise ValueError("HMA period must be an integer of at least 2")
-    portfolio = Portfolio()
-    window, signals = [], []
-    warmup = period * 3
-    last = None
-    for index, price in enumerate(prices):
-        price = _price(price)
-        last = price
-        window.append(price)
-        if len(window) <= warmup:
-            continue
-        window.pop(0)
-        values = calculate_hma(window, period)
-        if len(values) < 2 or values[-1] == values[-2]:
-            continue
-        direction = "BUY" if values[-1] > values[-2] else "SELL"
-        if direction != portfolio.direction:
-            portfolio.target(direction, price)
-            signals.append((index, direction, price))
-    return BacktestResult(portfolio.balance, portfolio.unrealized(last) if last is not None else 0.0,
-                          portfolio.direction, portfolio.price, tuple(portfolio.trades), tuple(signals))
+
+    class LegacySlope:
+        name = "legacy HMA quote-buffer"
+        warmup = period * 3
+        current = None
+
+        def target(self, candles):
+            values = calculate_hma([float(c.prices.close) for c in candles], period)
+            if len(values) >= 2 and values[-1] != values[-2]:
+                self.current = "BUY" if values[-1] > values[-2] else "SELL"
+            return self.current
+
+    candles = [_candle(p, i) for i, p in enumerate(prices)]
+    origin = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    result = run(
+        candles,
+        LegacySlope(),
+        SimulationConfig(0, 1, legacy_unfunded=True),
+        start=origin,
+        end=candles[-1].end if candles else origin,
+        execution="observed_close",
+        warmup_extra=1,
+    )
+    ledger = result.ledger
+    p = ledger.position
+    return BacktestResult(
+        float(ledger.balance),
+        float(result.equity_curve[-1]["unrealized_pnl"]),
+        p.direction if p else None,
+        float(p.entry_price) if p else None,
+        tuple(
+            ClosedTrade(
+                t.direction, float(t.entry_price), float(t.exit_price), float(t.net_pnl)
+            )
+            for t in ledger.trades
+        ),
+        tuple(
+            (e["index"], e["direction"], float(e["price"]))
+            for e in ledger.events
+            if e["action"] == "OPEN"
+        ),
+    )
 
 
 class TestStrategy(Portfolio):
-    """Legacy historical-price buffer adapter; never calls any order method."""
+    """Legacy supplied-history buffer. The historical CLI never constructs a broker."""
 
     def __init__(self, tb):
         super().__init__()
@@ -112,7 +153,7 @@ class TestStrategy(Portfolio):
         self.all_prices = [_price(row["openPrice"]["ask"]) for row in result["prices"]]
 
     def get_price(self, n):
-        if not isinstance(n, int) or n < 1:
+        if type(n) is not int or n < 1:
             raise ValueError("Price count must be positive")
         if len(self.all_prices) < n:
             return None

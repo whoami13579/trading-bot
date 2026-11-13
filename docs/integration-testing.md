@@ -8,7 +8,8 @@
 | Saved report | `uv run scripts/demo_roundtrip.py --report-only` | Reads private saved results; no network |
 | DEMO read-only | `uv run scripts/demo_roundtrip.py --read-only`, `uv run scripts/demo_readonly.py` | Authenticated DEMO reads, no orders |
 | LIVE read-only | `uv run scripts/live_preflight.py --REAL` | Authenticated LIVE preflight, no orders |
-| Historical simulation | `uv run scripts/backtest.py` | Read-only DEMO history fetch, then local simulation |
+| Historical simulation | `uv run hma.py --backtest`, `uv run scripts/backtest.py` | Public Dukascopy/Yahoo history only; no broker access or orders |
+| Legacy history diagnostic | `uv run test_strategy.py` | Authenticated read-only broker history, then legacy quote simulation |
 | DEMO order execution | `uv run scripts/demo_roundtrip.py` and strategy commands without `--REAL`; `test.py` | Orders; separate authorization required during maintenance |
 | LIVE order execution | Strategies with `--REAL`; `scripts/demo_roundtrip.py --REAL`; explicit legacy LIVE execution flags below | Real-money orders subject to existing gates; never run during refactoring |
 
@@ -16,9 +17,12 @@ The ping command is a repeating service loop; `--help` alone is used in offline
 validation. `test.py` and `test_api_key.py` are executable integration tools, not
 unit tests. Never discover `test*.py` across the repository root.
 
-New paths `scripts/demo_roundtrip.py`, `scripts/live_preflight.py`,
-`scripts/backtest.py`, and `scripts/ping_service.py` retain the old argument and
-environment selection behavior. Old root commands remain supported.
+Paths `scripts/demo_roundtrip.py`, `scripts/live_preflight.py`, and
+`scripts/ping_service.py` retain the old argument and environment selection
+behavior. `scripts/backtest.py` now runs the isolated historical provider CLI and
+rejects broker environment/account options. The old root `test_strategy.py`
+diagnostic remains available through `trading_bot.tools.history_probe`.
+See [historical backtesting](backtesting.md) for deterministic tests and real-data results.
 
 ## DNS failures and safe connectivity checks
 
