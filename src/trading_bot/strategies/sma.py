@@ -41,6 +41,7 @@ def main():
     # 3. Main Loop
     while True:
         try:
+            tradingApi.prepare_trading_cycle()
             # Fetch latest single price
             result, _ = tradingApi.getHistoricalPrices(SYMBOL, "MINUTE", 1)
             new_price = result['prices'][0]['openPrice']['ask']

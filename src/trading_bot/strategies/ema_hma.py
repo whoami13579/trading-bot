@@ -65,14 +65,15 @@ def main() -> None:
     # 3. Execution Loop
     while True:
         try:
-            wait_until_targets(TIMES)
-            tradingApi.load_keys()
+            wait_until_targets(TIMES, keepalive=tradingApi.prepare_trading_cycle)
 
             if DAYS == 7:
                 pass
             elif DAYS == 5:
                 if not tradingApi.is_market_open():
                     tradingApi.wait_until_open()
+
+            tradingApi.prepare_trading_cycle()
 
             ema_result = calculate_two_ema_result(tradingApi, SYMBOL, TIME_FRAME, LONG_PERIOD, SHORT_PERIOD)
             print(f"{colors.YELLOW}ema_result: {ema_result}{colors.ENDC}")

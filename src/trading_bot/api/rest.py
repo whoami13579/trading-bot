@@ -56,6 +56,7 @@ class RestComponent:
         Existing LIVE position open/close remain available exclusively through LiveExecution.
         Authorization never changes an account or preferences by itself.
         """
+        self._require_available()
         if impact not in {
             "account-switch",
             "preferences",

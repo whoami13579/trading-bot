@@ -57,6 +57,11 @@ class TradingApi(
         self._live_send_depth = 0
         self._session_generation = 0
         self._unavailable = None
+        self._mutation_outcome_uncertain = False
+        self._last_authenticated_at: float | None = None
+        self._cycle_identity: tuple[str, str, str] | None = None
+        self._preparing_cycle = False
+        self._last_cycle_ping: dict | None = None
         supplied = (x_cap_api_key, identifier, password)
         if all(value is None for value in supplied):
             values = load_credentials()
@@ -88,12 +93,14 @@ class TradingApi(
     def _invalidate_session(self, reason):
         self._unavailable = reason
         self.cst = self.x_security_token = ""
+        self._last_authenticated_at = None
         self._login_has_active_environment = False
         self._login_account_id = None
         if self._live_execution is not None:
             self._live_execution.armed = False
 
     def _stop(self, reason, *, mutation=False, broker_code=None):
+        self._mutation_outcome_uncertain |= mutation
         self._invalidate_session(reason)
         raise TradingUnavailable(
             reason, mutation=mutation, broker_code=broker_code
@@ -101,7 +108,9 @@ class TradingApi(
 
     def _require_available(self):
         if self._unavailable is not None:
-            raise TradingUnavailable(self._unavailable) from None
+            raise TradingUnavailable(
+                self._unavailable, mutation=self._mutation_outcome_uncertain
+            ) from None
 
     def _request(self, method, url, **kwargs):
         self._require_available()
@@ -143,8 +152,13 @@ class TradingApi(
             user_identifier=self.IDENTIFIER,
         )
         kwargs.update(timeout=REQUEST_TIMEOUT, allow_redirects=False, verify=True)
+        request_started = time.monotonic()
         try:
             res = getattr(requests, method)(url, **kwargs)
+        except KeyboardInterrupt:
+            self._mutation_outcome_uncertain |= mutation
+            self._invalidate_session("request_interrupted")
+            raise
         except (requests.exceptions.RequestException, OSError) as exc:
             self._stop(network_failure_reason(exc), mutation=mutation)
         from trading_bot.api.errors import broker_error_code
@@ -180,6 +194,10 @@ class TradingApi(
                         self._stop("invalid_api_response", mutation=mutation)
             except ValueError:
                 self._stop("invalid_api_response", mutation=mutation)
+        if res.status_code == 200:
+            auth_headers = kwargs.get("headers", {})
+            if auth_headers.get("CST") and auth_headers.get("X-SECURITY-TOKEN"):
+                self._last_authenticated_at = request_started
         return res
 
     def getServerTime(self) -> str | None:
@@ -192,6 +210,9 @@ class TradingApi(
         return None
 
     def pingService(self) -> tuple[dict, int]:
+        if self._cycle_identity is not None:
+            self.prepare_trading_cycle()
+            return self._last_cycle_ping, 200
         headers = {"X-SECURITY-TOKEN": self.x_security_token, "CST": self.cst}
         res = self._request(
             "get",
@@ -204,8 +225,12 @@ class TradingApi(
             return res.json(), res.status_code
 
         # Refresh authentication only for an expired or unauthorized session.
-        if res.status_code not in (401, 403):
-            self._stop(f"http_{res.status_code}")
+        if res.status_code != 401:
+            self._stop(
+                "permission_denied_http_403"
+                if res.status_code == 403
+                else f"http_{res.status_code}"
+            )
         cstAndXSecurityToken = self.getCstAndXSecurityToken()
         if not cstAndXSecurityToken:
             self._require_available()

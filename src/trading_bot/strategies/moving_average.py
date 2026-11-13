@@ -11,6 +11,7 @@ SLEEP_TIME = 60
 
 
 def update_prices(prices: list, tradingApi: TradingApi, symbol=SYMBOL):
+    tradingApi.prepare_trading_cycle()
     prices.pop(0)
 
     result, _ = tradingApi.getHistoricalPrices(symbol, "MINUTE", 1)

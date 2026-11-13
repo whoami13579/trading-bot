@@ -127,6 +127,7 @@ def create_trading_api(args, *, symbol=None, size=None, order_execution=True):
             raise TradingUnavailable(api._unavailable) from None
         raise ConfigurationError(f"{environment}_authentication_failed_no_fallback")
     account = api.verify_account_environment()
+    api.pin_session_identity(account)
     print(f"Authenticated {environment.upper()} account ****{account['accountId'][-4:]}")
     if args.real and order_execution:
         gate = LiveExecution(api, args, symbol, size)

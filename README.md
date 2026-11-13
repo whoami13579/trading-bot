@@ -121,3 +121,5 @@ See [API usage and safe DEMO examples](docs/api-usage.md) and the
 The client covers 36 REST operations and five streaming destinations. New LIVE
 mutation categories remain blocked pending dedicated risk policies; existing
 LIVE open/close controls are preserved. `test.py` remains unchanged.
+
+For scheduler-related HTTP 401 failures, see [session renewal and HMA read-only diagnostics](docs/session-lifecycle.md).

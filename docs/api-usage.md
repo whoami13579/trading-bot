@@ -16,6 +16,7 @@ api = TradingApi(environment="demo", auto_authenticate=False)
 if api.createNewSession() is None:
     raise RuntimeError("DEMO authentication failed")
 account = api.verify_account_environment()  # Discovers the active enabled CFD account.
+api.pin_session_identity(account)  # For a custom scheduled loop, call prepare_trading_cycle() before each cycle.
 accounts = api.getAllAccounts()
 preferences = api.getAccountPreferences()
 # Do not log api credentials, api.cst, api.x_security_token, or arbitrary server payloads.
@@ -30,6 +31,10 @@ or connect. Optional encrypted login is `api.createNewSession(encryptedPassword=
 it retrieves the public key and follows the reference's RSA PKCS#1 v1.5 example, including
 its inner Base64 encoding. The prose calls this AES, but the published executable example
 uses RSA; this implementation follows that example.
+
+Scheduled strategies validate their pinned account/session before each cycle and renew
+conservatively after nine minutes of inactivity. See [scheduled session lifecycle](session-lifecycle.md)
+for recovery rules, LIVE gate behavior and HMA read-only scheduling options.
 
 REST sessions expire after ten minutes of inactivity. `api.pingService()` keeps the session
 active and retains the legacy single login refresh for an unauthorized ping; refresh

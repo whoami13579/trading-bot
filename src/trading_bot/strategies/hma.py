@@ -2,7 +2,7 @@ from trading_bot.config.trading_config import add_trading_arguments, create_trad
 from trading_bot.strategies.indicators import calculate_hma_result
 from trading_bot.utils.colors import colors
 import argparse
-from trading_bot.utils.scheduler import wait_until_targets, timeframe_to_minutes
+from trading_bot.utils.scheduler import SCHEDULE_TIMEFRAMES, wait_until_targets, timeframe_to_minutes
 
 # --- Configuration ---
 DEFAULT_SYMBOL: str = "EURUSD"
@@ -21,6 +21,11 @@ def main() -> None:
     add_arguments(parser)
     parser.add_argument("--hma_period", "--hma-period", type=int)
     parser.add_argument("--time_frame", "--time-frame", choices=MINUTES)
+    parser.add_argument("--schedule-time-frame", choices=SCHEDULE_TIMEFRAMES,
+                        help="Override scheduling only; candle timeframe stays unchanged")
+    parser.add_argument("--read-only", action="store_true",
+                        help="DEMO session/history diagnostics; never calculates signals or places orders")
+    parser.add_argument("--cycles", type=int, help="Stop after this many scheduled cycles")
     parser.add_argument("--days", type=int)
     parser.add_argument("--direction", type=str)
 
@@ -33,8 +38,12 @@ def main() -> None:
     import sys
     if any(option.split("=", 1)[0] in SIMULATION_OPTIONS for option in sys.argv[1:]):
         parser.error("Historical data/account assumptions require --backtest")
-    if args.time_frame and args.time_frame not in ("MINUTE", "MINUTE_5", "MINUTE_15", "MINUTE_30"):
-        parser.error("This candle timeframe is supported only with --backtest")
+    if args.time_frame and args.time_frame not in SCHEDULE_TIMEFRAMES and not args.schedule_time_frame:
+        parser.error("This candle timeframe requires --schedule-time-frame for online execution")
+    if args.cycles is not None and args.cycles <= 0:
+        parser.error("--cycles must be positive")
+    if args.read_only and args.real:
+        parser.error("HMA read-only diagnostics require DEMO; omit --REAL/--real")
     QUANTITY = args.size
     SYMBOL = args.symbol
 
@@ -59,21 +68,32 @@ def main() -> None:
         DIRECTION: str = DEFAULT_DIRECTION
 
     # 1. Environment & Auth
-    tradingApi = create_trading_api(args, symbol=SYMBOL, size=QUANTITY)
+    if args.read_only:
+        tradingApi = create_trading_api(args, symbol=SYMBOL, size=QUANTITY, order_execution=False)
+    else:
+        tradingApi = create_trading_api(args, symbol=SYMBOL, size=QUANTITY)
 
-    TIMES = timeframe_to_minutes(TIMEFRAME)
+    TIMES = timeframe_to_minutes(args.schedule_time_frame or TIMEFRAME)
 
     # 3. Execution Loop
-    while True:
+    completed_cycles = 0
+    while args.cycles is None or completed_cycles < args.cycles:
         try:
-            wait_until_targets(TIMES)
-            tradingApi.load_keys()
+            wait_until_targets(TIMES, keepalive=tradingApi.prepare_trading_cycle)
+            completed_cycles += 1
 
             if DAYS == 7:
                 pass
             elif DAYS == 5:
                 if not tradingApi.is_market_open():
                     tradingApi.wait_until_open()
+
+            renewed = tradingApi.prepare_trading_cycle()
+            if args.read_only:
+                history, code = tradingApi.getHistoricalPrices(SYMBOL, TIMEFRAME, HMA_PERIOD * 3)
+                print(f"DEMO read-only cycle {completed_cycles}: history HTTP {code}; "
+                      f"{len(history['prices'])} prices; session {'renewed' if renewed else 'validated'}")
+                continue
 
             hma_result = calculate_hma_result(tradingApi, SYMBOL, TIMEFRAME, HMA_PERIOD)
 
@@ -105,6 +125,8 @@ def main() -> None:
                         print(f"failed to create {hma_result} position ({result})")
 
         except Exception as e:
+            if args.read_only:
+                raise SystemExit("DEMO read-only cycle failed; no order was submitted.") from None
             print(f"{colors.WARNING}Error in main loop: {e}{colors.ENDC}")
 
 

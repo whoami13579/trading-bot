@@ -8,6 +8,11 @@ from urllib3.exceptions import NameResolutionError, ReadTimeoutError
 REQUEST_TIMEOUT = (5, 20)  # Connection, then socket read inactivity (not a total deadline).
 
 MESSAGES = {
+    "request_interrupted": "An API request was interrupted; inspect execution state before any manual retry.",
+    "session_identity_not_pinned": "A verified startup account is required before scheduled session renewal.",
+    "session_identity_changed": "The authenticated account or environment changed; no account switch was performed.",
+    "session_renewal_failed": "The scheduled session could not be renewed.",
+    "live_session_renewed_requires_preflight": "The LIVE session renewed and its execution gate remains disarmed; stop and reconcile before a new full preflight.",
     "dns_resolution_failed": "DNS resolution failed; check the network and WSL/Windows resolver. No HTTP authentication result was received.",
     "proxy_connection_failed": "The configured proxy could not be reached.",
     "connection_timeout": "The API connection timed out.",

@@ -1,7 +1,22 @@
 import time
 from datetime import datetime, timedelta
+from collections.abc import Callable
 
-def wait_until_targets(target_minutes):
+SCHEDULE_TIMEFRAMES = ("MINUTE", "MINUTE_5", "MINUTE_15", "MINUTE_30")
+
+
+def wait_until_targets(
+    target_minutes, *, keepalive: Callable[[], object] | None = None
+):
+    """Wait for the candle boundary; optionally validate a session every five minutes."""
+    if (
+        not isinstance(target_minutes, (list, tuple))
+        or not target_minutes
+        or any(
+            type(value) is not int or not 0 <= value < 60 for value in target_minutes
+        )
+    ):
+        raise ValueError("scheduler_requires_minutes_between_0_and_59")
     now = datetime.now()
     current_min = now.minute
 
@@ -29,21 +44,19 @@ def wait_until_targets(target_minutes):
         f"Next run at:  {target_time.strftime('%H:%M:%S')} (In {round(delay, 2)} seconds)"
     )
 
-    # Standard time.sleep can be slightly inaccurate over long periods,
-    # but for 5-30 minute windows, it works perfectly.
-    time.sleep(delay)
+    if keepalive is None:
+        time.sleep(delay)
+        return
+    deadline = time.monotonic() + delay
+    while (remaining := deadline - time.monotonic()) > 0:
+        time.sleep(min(remaining, 300))
+        if time.monotonic() < deadline:
+            keepalive()  # Read-only session/account validation; failures propagate and stop.
 
 
 def timeframe_to_minutes(timeframe: str) -> list[int]:
-    match timeframe:
-        case "MINUTE":
-            result = [i for i in range(0, 60, 1)]
-            return result
-        case "MINUTE_5":
-            result = [i for i in range(0, 60, 5)]
-            return result
-        case "MINUTE_15":
-            result = [i for i in range(0, 60, 15)]
-            return result
-        case "MINUTE_30":
-            return [0, 30]
+    """Supported minute boundaries. Data resolution can be configured separately."""
+    intervals = {"MINUTE": 1, "MINUTE_5": 5, "MINUTE_15": 15, "MINUTE_30": 30}
+    if timeframe not in intervals:
+        raise ValueError("unsupported_scheduler_timeframe")
+    return list(range(0, 60, intervals[timeframe]))
