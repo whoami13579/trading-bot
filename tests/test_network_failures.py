@@ -1,8 +1,11 @@
 """Mocked transports only: no .env access, API traffic, or actual order submissions."""
 
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime
 import io
+import json
 from pathlib import Path
+import re
 import runpy
 import socket
 import unittest
@@ -14,6 +17,7 @@ from urllib3.exceptions import MaxRetryError, NameResolutionError, ReadTimeoutEr
 from TradingApi import TradingApi
 from scripts.network_errors import TradingUnavailable, network_failure_reason
 from scripts import trading_config
+from trading_bot.api.network_errors import endpoint_template
 
 
 def dns_error():
@@ -35,6 +39,86 @@ class NetworkFailureTests(unittest.TestCase):
         api = TradingApi("fixture-key", "fixture-login", "fixture-password", auto_authenticate=False)
         api.cst, api.x_security_token = "fixture-cst", "fixture-token"
         return api
+
+    def assert_sanitized_diagnostic(self, captured, method, endpoint, category, stopped):
+        self.assertEqual(len(captured.records), 1)
+        message = captured.records[0].getMessage()
+        self.assertRegex(
+            message,
+            rf"^API transport failure timestamp=\S+ environment=DEMO method={method} "
+            rf"endpoint={re.escape(endpoint)} elapsed_seconds=0\.125 exception_category={category}$",
+        )
+        timestamp = message.split("timestamp=", 1)[1].split()[0]
+        self.assertIsNotNone(datetime.fromisoformat(timestamp).utcoffset())
+        output = "\n".join(captured.output) + str(stopped)
+        for secret in (
+            "fixture-key", "fixture-login", "fixture-password", "fixture-cst", "fixture-token",
+            "private-", "CST", "X-SECURITY-TOKEN", "X-CAP-API-KEY", "password=",
+            "https://", "?", "Traceback",
+        ):
+            self.assertNotIn(secret, output)
+
+    def test_dns_read_logs_operation_without_headers_query_body_or_exception_text(self):
+        api = self.client()
+        api._login_account_id = "private-account-id"
+        with (
+            patch("trading_bot.api.rate_limits.throttle"),
+            patch("TradingApi.time.monotonic", side_effect=[10, 10.125]),
+            patch("TradingApi.requests.get", side_effect=dns_error()) as get,
+            self.assertLogs("trading_bot.api.client", level="WARNING") as captured,
+            self.assertRaises(TradingUnavailable) as stopped,
+        ):
+            api._request(
+                "get", api.BASE_URL + "/api/v1/prices/private-epic?password=private-query",
+                headers={"CST": api.cst, "X-SECURITY-TOKEN": api.x_security_token,
+                         "X-CAP-API-KEY": api.X_CAP_API_KEY},
+                params={"query": "private-query-value"}, json={"secret": "private-body"},
+            )
+        get.assert_called_once()
+        self.assert_sanitized_diagnostic(
+            captured, "GET", "/api/v1/prices/{epic}", "dns_resolution_failed", stopped.exception
+        )
+        self.assertFalse(stopped.exception.outcome_uncertain)
+        self.assertIn("Trading stopped; no automatic retry.", str(stopped.exception))
+        self.assertEqual((api.cst, api.x_security_token), ("", ""))
+
+    def test_order_transport_diagnostic_preserves_uncertainty_and_never_replays(self):
+        for method, endpoint, operation in (
+            ("post", "/api/v1/positions", lambda api: api.createPosition("private-epic", "BUY", 100)),
+            ("delete", "/api/v1/positions/{dealId}", lambda api: api.closePosition("private-position-id")),
+        ):
+            with self.subTest(method=method):
+                api = self.client()
+                api._login_account_id = "private-account-id"
+                with (
+                    patch("trading_bot.api.rate_limits.throttle"),
+                    patch("TradingApi.time.monotonic", side_effect=[10, 10.125]),
+                    patch(f"TradingApi.requests.{method}", side_effect=requests.ReadTimeout("private-exception")) as send,
+                    self.assertLogs("trading_bot.api.client", level="WARNING") as captured,
+                ):
+                    with self.assertRaises(TradingUnavailable) as stopped:
+                        operation(api)
+                    with self.assertRaises(TradingUnavailable) as followup:
+                        operation(api)
+                    send.assert_called_once()
+                self.assert_sanitized_diagnostic(
+                    captured, method.upper(), endpoint, "read_timeout", stopped.exception
+                )
+                for error in (stopped.exception, followup.exception):
+                    self.assertTrue(error.outcome_uncertain)
+                    self.assertIn("Trading stopped; no automatic retry.", str(error))
+                    self.assertIn("Order outcome may be uncertain", str(error))
+                self.assertEqual((api.cst, api.x_security_token), ("", ""))
+
+    def test_endpoint_templates_cover_known_routes_and_redact_unknown_paths(self):
+        inventory = json.loads((Path(__file__).parent / "fixtures/capital_api_inventory.json").read_text())
+        for route in inventory:
+            template = route["path"]
+            path = re.sub(r"\{\w+\}", "private-id%2Fvalue", template)
+            with self.subTest(template=template):
+                self.assertEqual(endpoint_template(path), template)
+        for path in ("/private-secret", "/api/v1/private-secret", "/api/v1/positions/private-id/extra", "/api/v1/prices/"):
+            self.assertEqual(endpoint_template(path), "/api/v1/{unknown}")
 
     def test_typed_nested_dns_and_connection_errors_have_distinct_categories(self):
         cases = [(dns_error(), "dns_resolution_failed"),

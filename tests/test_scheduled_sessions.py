@@ -23,6 +23,32 @@ class EndCycle(BaseException):
 
 
 class ScheduledStrategyTests(unittest.TestCase):
+    def assert_hma_submission_message(self, direction):
+        api = Mock()
+        api.getAllPositionsList.return_value = []
+        api.createPosition.return_value = ({"dealReference": "private-reference"}, 200)
+        output = io.StringIO()
+        with (
+            patch("sys.argv", ["hma.py", "--cycles", "1", "--direction", direction]),
+            patch.object(hma, "create_trading_api", return_value=api),
+            patch.object(hma, "wait_until_targets"),
+            patch.object(hma, "calculate_hma_result", return_value=direction),
+            redirect_stdout(output),
+        ):
+            hma.main()
+        api.createPosition.assert_called_once_with("EURUSD", direction, 100)
+        api.closePosition.assert_not_called()
+        color = hma.colors.BLUE if direction == "BUY" else hma.colors.RED
+        self.assertEqual(output.getvalue(), f">>> {color}{direction}{hma.colors.ENDC} order submitted\n")
+        for text in ("confirmed", "filled", "private-reference"):
+            self.assertNotIn(text, output.getvalue())
+
+    def test_hma_buy_response_dictionary_logs_buy_submitted(self):
+        self.assert_hma_submission_message("BUY")
+
+    def test_hma_sell_response_dictionary_logs_sell_submitted(self):
+        self.assert_hma_submission_message("SELL")
+
     def run_readonly_hma(self, options=()):
         api = Mock()
         api.prepare_trading_cycle.side_effect = [True, False, False]

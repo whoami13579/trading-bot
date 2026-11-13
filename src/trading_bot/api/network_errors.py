@@ -1,11 +1,54 @@
 """Fixed diagnostics only: requests exceptions can contain credentials and URLs."""
 
 import socket
+import re
 
 import requests
 from urllib3.exceptions import NameResolutionError, ReadTimeoutError
 
 REQUEST_TIMEOUT = (5, 20)  # Connection, then socket read inactivity (not a total deadline).
+
+# Only these literal templates may enter diagnostics. Unknown routes are redacted
+# in full; replacing selected identifiers in the original URL is not sufficient.
+_ENDPOINT_TEMPLATES = (
+    "/api/v1/time",
+    "/api/v1/ping",
+    "/api/v1/session",
+    "/api/v1/session/encryptionKey",
+    "/api/v1/accounts",
+    "/api/v1/accounts/preferences",
+    "/api/v1/accounts/topUp",
+    "/api/v1/history/activity",
+    "/api/v1/history/transactions",
+    "/api/v1/positions",
+    "/api/v1/positions/{dealId}",
+    "/api/v1/workingorders",
+    "/api/v1/workingorders/{dealId}",
+    "/api/v1/confirms/{dealReference}",
+    "/api/v1/marketnavigation",
+    "/api/v1/marketnavigation/{nodeId}",
+    "/api/v1/markets",
+    "/api/v1/markets/{epic}",
+    "/api/v1/prices/{epic}",
+    "/api/v1/clientsentiment",
+    "/api/v1/clientsentiment/{marketId}",
+    "/api/v1/watchlists",
+    "/api/v1/watchlists/{watchlistId}",
+    "/api/v1/watchlists/{watchlistId}/{epic}",
+)
+_ENDPOINT_PATTERNS = tuple(
+    (re.compile(re.sub(r"\{\w+\}", "[^/]+", template)), template)
+    for template in _ENDPOINT_TEMPLATES
+)
+
+
+def endpoint_template(path):
+    """Return a fixed route template, never any portion of an unknown path."""
+    for pattern, template in _ENDPOINT_PATTERNS:
+        if pattern.fullmatch(path):
+            return template
+    return "/api/v1/{unknown}"
+
 
 MESSAGES = {
     "request_interrupted": "An API request was interrupted; inspect execution state before any manual retry.",

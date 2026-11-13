@@ -117,10 +117,8 @@ def main() -> None:
                     result, code = tradingApi.createPosition(SYMBOL, hma_result, QUANTITY)
 
                     if code == 200:
-                        if result == "BUY":
-                            print(f">>> {colors.BLUE}BUY{colors.ENDC}")
-                        else:
-                            print(f">>> {colors.RED}SELL{colors.ENDC}")
+                        color = colors.BLUE if hma_result == "BUY" else colors.RED
+                        print(f">>> {color}{hma_result}{colors.ENDC} order submitted")
                     else:
                         print(f"failed to create {hma_result} position ({result})")
 

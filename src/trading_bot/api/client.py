@@ -1,4 +1,5 @@
 import requests
+import logging
 from datetime import datetime, timezone
 import time
 from typing import List
@@ -6,6 +7,7 @@ from trading_bot.config.trading_config import endpoint, load_credentials
 from trading_bot.api.network_errors import (
     REQUEST_TIMEOUT,
     TradingUnavailable,
+    endpoint_template,
     network_failure_reason,
 )
 from urllib.parse import urlsplit
@@ -17,6 +19,8 @@ from trading_bot.api.session import SessionAPI
 from trading_bot.api.positions import PositionsAPI
 from trading_bot.api.watchlists import WatchlistsAPI
 from trading_bot.api.working_orders import WorkingOrdersAPI
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class TradingApi(
@@ -160,7 +164,20 @@ class TradingApi(
             self._invalidate_session("request_interrupted")
             raise
         except (requests.exceptions.RequestException, OSError) as exc:
-            self._stop(network_failure_reason(exc), mutation=mutation)
+            reason = network_failure_reason(exc)
+            _LOGGER.warning(
+                "API transport failure timestamp=%s environment=%s method=%s "
+                "endpoint=%s elapsed_seconds=%.3f exception_category=%s",
+                datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+                self.environment.upper(),
+                method.upper() if method.lower() in {
+                    "get", "post", "put", "delete", "patch", "head", "options"
+                } else "UNKNOWN",
+                endpoint_template(path),
+                time.monotonic() - request_started,
+                reason,
+            )
+            self._stop(reason, mutation=mutation)
         from trading_bot.api.errors import broker_error_code
 
         error_code = broker_error_code(res) if res.status_code >= 300 else None
