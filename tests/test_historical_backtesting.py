@@ -825,7 +825,7 @@ class CliAndIsolationTests(unittest.TestCase):
                 self.subTest(options=options),
                 patch("sys.argv", ["hma.py", *options]),
                 patch.object(hma, "create_trading_api") as auth,
-                patch("trading_bot.backtesting.cli.load_history") as fetch,
+                patch("trading_bot.backtesting.runner.load_history") as fetch,
                 redirect_stderr(io.StringIO()),
                 self.assertRaises(SystemExit),
             ):
@@ -964,7 +964,7 @@ assert not any(n.startswith(("trading_bot.api", "trading_bot.risk")) for n in sy
             with (
                 self.subTest(options=options),
                 patch("sys.argv", ["hma.py", "--backtest", *options]),
-                patch("trading_bot.backtesting.cli.load_history") as fetch,
+                patch("trading_bot.backtesting.runner.load_history") as fetch,
                 redirect_stderr(io.StringIO()),
                 self.assertRaises(SystemExit),
             ):

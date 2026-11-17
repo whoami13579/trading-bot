@@ -1,7 +1,7 @@
 # Trading bot
 
-Capital.com trading strategies, guarded DEMO/LIVE integration tools, and an
-historical HMA backtester. Python **3.12** and the existing **uv** lock workflow are
+Capital.com trading strategies, guarded DEMO/LIVE integration tools, and a
+unified multi-strategy historical backtester (HMA and Donchian). Python **3.12** and the existing **uv** lock workflow are
 used throughout. DEMO is the default; LIVE always requires explicit selection.
 
 **`test.py` and the roundtrip tools can submit orders. They are not offline tests.**
@@ -26,7 +26,8 @@ network access. Keep `.env` and integration state private and ignored.
 ```text
 src/trading_bot/
   api/          Capital.com client, models, network/auth diagnostics and DEMO transport
-  backtesting/  Historical providers, UTC candles, simulation ledger and reports
+  backtesting/  Shared historical data, engine, cost models, strategy adapters,
+                evaluation safeguards, reports and the unified backtest CLI
   strategies/   SMA, HMA, EMA/HMA, multiple HMA, moving average, indicators, backtest
   risk/         LIVE execution controls, costs, journals, confirmations, reconciliation
   config/       Credential parsing, endpoint selection, strategy defaults, fixed paths
@@ -53,7 +54,7 @@ in the repository root.
 | CLI help | `uv run scripts/demo_roundtrip.py --help` | `uv run test_api_key.py --help` |
 | DEMO read-only preflight | `uv run scripts/demo_roundtrip.py --read-only` | `uv run test_api_key.py --read-only` |
 | LIVE read-only preflight | `uv run scripts/live_preflight.py --REAL` | `uv run test_live_api.py --REAL` |
-| Historical simulation, no broker access | `uv run hma.py --backtest` or `uv run scripts/backtest.py` | — |
+| Historical simulation, no broker access | `uv run trading-bot-backtest --strategy hma\|donchian` | `uv run hma.py --backtest`, `uv run src/trading_bot/strategies/donchian.py --backtest`, `uv run scripts/backtest.py` |
 | Legacy read-only broker-history diagnostic | `uv run test_strategy.py` | — |
 
 The account-access commands above are documentation, not part of offline validation.
@@ -72,9 +73,26 @@ from trading_bot.strategies.backtest import run_hma_backtest
 result = run_hma_backtest([1 + i / 1000 for i in range(100)], period=20)
 ```
 
-## Historical HMA backtesting
+## Historical backtesting
+
+One entry point runs every supported strategy on the same data, engine, cost
+models and report:
 
 ```bash
+uv run trading-bot-backtest --strategy hma --symbol EURUSD --time-frame HOUR --size 100
+uv run trading-bot-backtest --strategy donchian --symbol EURUSD --time-frame HOUR --size 100
+uv run trading-bot-backtest --strategy donchian --cost-case high
+uv run trading-bot-backtest --strategy hma --end 2026-11-12 --slippage-pips 0.2
+```
+
+Omitted options use each strategy's preserved defaults: HMA uses Dukascopy,
+30-minute candles, the last 30 complete UTC days and continuous execution;
+Donchian uses the verified study snapshot, 1H candles, 2023-11-01 to 2026-11-01
+and the research window with base costs. The existing commands keep working with
+their previous defaults and numbers:
+
+```bash
+uv run src/trading_bot/strategies/donchian.py --backtest
 uv run hma.py --backtest
 uv run hma.py --backtest --time-frame MINUTE_5
 uv run hma.py --backtest --data-source yfinance
@@ -100,12 +118,14 @@ Each run saves JSON, trade/equity CSVs and an interactive `equity.html` in ignor
 rejects `--REAL` and account/risk/scheduling options. Without `--backtest`, `hma.py`
 retains DEMO trading and `hma.py --REAL` retains guarded LIVE trading.
 
-See [backtesting architecture, parameters, provider limits and verified results](docs/backtesting.md).
+See [backtesting architecture, parameters, provider limits and verified results](docs/backtesting.md)
+and [the unified framework, compatibility notes and strategy integration guide](docs/backtesting-framework.md).
 
 ## Documentation
 
 - [Setup and dependencies](docs/setup.md)
 - [Historical backtesting](docs/backtesting.md)
+- [Unified backtesting framework](docs/backtesting-framework.md)
 - [Configuration and environment selection](docs/configuration.md)
 - [Trading safeguards and execution commands](docs/trading-safety.md)
 - [Offline tests, read-only checks and order-capable integration tools](docs/integration-testing.md)

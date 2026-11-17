@@ -1,5 +1,11 @@
 # Historical HMA backtesting
 
+> HMA and Donchian now share one backtesting framework and one CLI
+> (`trading-bot-backtest --strategy hma|donchian`). This page documents the HMA
+> continuous mode, data providers and accounting, which are unchanged. See
+> [backtesting-framework.md](backtesting-framework.md) for the shared architecture,
+> execution models, report format and compatibility notes.
+
 Backtesting downloads public historical market data and simulates trades locally.
 It never loads Capital.com credentials, constructs a broker client, arms execution
 gates or writes trading journals. DEMO and LIVE strategy execution remain separate.
@@ -181,14 +187,23 @@ src/trading_bot/backtesting/
     base.py         HistoricalProvider protocol
     dukascopy.py    Candle export decoder and bounded HTTP transport
     yahoo.py        yfinance adapter, chunks and retention validation
-  engine.py         Strategy protocol, Decimal ledger and event loop
+  engine.py         Strategy protocol, Decimal ledger, execution policies, one event loop
   strategy.py       Shared HMA signal adapter
-  reporting.py      Statistics, JSON/CSV and interactive equity chart
-  cli.py            Historical-only argument validation and orchestration
+  adapters.py       Strategy registry: parameters, defaults, descriptions
+  execution.py      Continuous (HMA) and research-window (Donchian) cost/fill models
+  runner.py         plan -> data -> simulate -> report pipeline used by every CLI
+  evaluation.py     Walk-forward windows, frozen holdouts, stage registry, hashes
+  reporting.py      Standard report, JSON/CSV and interactive equity chart
+  cli.py            Unified historical-only CLI (and hma.py --backtest options)
+  study_data.py     Donchian snapshot acquisition/verification
+  study_engine.py   Research cost cases, rollover financing, snapshot frames
+  donchian_study.py Preregistered staged Donchian study
+  donchian_cli.py   Legacy single Donchian run (print only)
 ```
 
-Additional strategies implement `Strategy.target(completed_window)` and declare a
-warm-up length. Data acquisition and portfolio accounting remain reusable.
+Additional strategies implement `target(completed_window[, position])`, declare a
+warm-up length and add one adapter; see [backtesting-framework.md](backtesting-framework.md).
+Data acquisition and portfolio accounting remain reusable.
 `strategies/backtest.py` preserves old supplied-price functions over this same
 engine/ledger. That deprecated one-unit quote-buffer interface intentionally retains
 its old optimistic same-observation fills and two-sided reversal semantics; it is

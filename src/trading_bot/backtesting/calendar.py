@@ -74,3 +74,17 @@ def audit_coverage(
         else "Yahoo conservative UTC core: Monday–Thursday and Friday before 21:00; weekend edges unverified",
         "forward_filled": False,
     }
+
+
+def active_gap(start, end):
+    """True if [start, end) contains a missing active 30m Dukascopy-session slot.
+
+    Scheduled weekend closures alone are not gaps; an unexpected absence of
+    quotes during the modeled FX week is.
+    """
+    cursor = start
+    while cursor + timedelta(minutes=30) <= end:
+        if expected_open(cursor, "dukascopy"):
+            return True
+        cursor += timedelta(minutes=30)
+    return False
