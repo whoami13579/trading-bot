@@ -1,0 +1,62 @@
+# Offline CI: dependency install + the full offline test suite.
+#
+# Safety: this workflow uses no repository secrets, never creates .env or broker
+# integration state, and runs scripts/check_offline.py, which blocks socket
+# connections, HTTP sends and credential loading for the whole test process.
+# No Capital.com authentication and no DEMO/LIVE orders are possible here.
+# Nothing is uploaded except uv's package cache (PyPI wheels keyed on uv.lock);
+# no historical market data, .cache/ or backtests/ output exists in CI.
+name: CI
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Superseded PR runs are cancelled; every push to master is tested.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  offline-tests:
+    name: Offline tests (Python 3.12)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONUNBUFFERED: "1"
+      TZ: UTC
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Confirm no credentials or private broker state are present
+        run: |
+          for path in .env .demo-integration .live-integration; do
+            if [ -e "$path" ]; then
+              echo "::error::$path must never exist in CI"
+              exit 1
+            fi
+          done
+
+      - name: Set up uv and Python 3.12
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.12.11"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install locked dependencies
+        timeout-minutes: 5
+        run: uv sync --locked
+
+      - name: Run the full offline test suite
+        timeout-minutes: 10
+        run: uv run --locked scripts/check_offline.py

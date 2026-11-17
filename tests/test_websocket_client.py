@@ -2,6 +2,7 @@
 
 from collections import deque
 import json
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -200,7 +201,13 @@ class WebSocketTests(unittest.TestCase):
                 "securityToken": self.api.x_security_token,
             },
         )
-        self.stream._last_ping = 0
+        # Within the interval, receiving must not send another keepalive.
+        self.stream.receive(0.001)
+        self.assertEqual(len(self.socket.sent), 1)
+        # monotonic() has an arbitrary origin (boot time on Linux), so "a full
+        # interval ago" must be relative to now, not 0: a freshly booted CI
+        # runner has a monotonic clock below the 300 s ping interval.
+        self.stream._last_ping = time.monotonic() - self.stream.ping_interval
         self.stream.receive(0.001)
         self.assertEqual(len(self.socket.sent), 2)
 

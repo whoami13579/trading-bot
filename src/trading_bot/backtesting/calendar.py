@@ -74,3 +74,28 @@ def audit_coverage(
         else "Yahoo conservative UTC core: Monday–Thursday and Friday before 21:00; weekend edges unverified",
         "forward_filled": False,
     }
+
+
+def active_gap(start, end, timeframe="MINUTE_30"):
+    """True if a whole candle slot of ``timeframe`` in [start, end) should have traded.
+
+    ``start`` is the previous candle's end and ``end`` the next candle's start,
+    so every whole ``timeframe`` slot between them is a missing candle. A slot is
+    expected if any part of it lies inside the DST-aware New York Sunday 17:00 to
+    Friday 17:00 FX week (a 4H slot that starts while closed but contains the
+    Sunday open still counts). Scheduled weekend closures alone are not gaps.
+    Session boundaries fall on whole New York hours, so probing each slot every
+    min(timeframe, 30 minutes) is exact. For MINUTE_30, HOUR and HOUR_4 slots
+    aligned to their timeframe the probes are identical to the original 30m scan.
+    """
+    step = duration(timeframe)
+    probe = min(step, timedelta(minutes=30))
+    cursor = start
+    while cursor + step <= end:
+        moment = cursor
+        while moment < cursor + step:
+            if expected_open(moment, "dukascopy"):
+                return True
+            moment += probe
+        cursor += step
+    return False

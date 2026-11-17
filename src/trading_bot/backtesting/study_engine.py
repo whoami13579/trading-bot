@@ -1,16 +1,25 @@
-"""Isolated window execution using the existing Decimal ledger and HMA signal."""
+"""Research-window cost cases, rollover financing and snapshot frame preparation.
+
+Simulation itself is the shared engine loop with the RESEARCH_WINDOW policy:
+flat start, no warm-up entries, unexpected-gap resets and a costed synthetic
+exit at the last completed close of every window.
+"""
 
 from bisect import bisect_left
-from collections import deque
-from dataclasses import dataclass, replace, asdict
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-from .calendar import expected_open
-from .engine import Ledger, SimulationConfig, SimulationResult, statistics, PIP, ZERO
+from .calendar import active_gap, expected_open
+from .engine import (Ledger, SimulationConfig, RESEARCH_WINDOW, statistics, PIP, ZERO,
+                     simulate as run_policy)
 from .models import OHLC, dec
 from .timeframes import duration, normalize, resample
+
+__all__ = ["CostCase", "COSTS", "execution_candle", "RolloverLedger", "active_gap",
+           "prepare_frames", "research_config", "research_quotes", "simulate",
+           "simulate_window"]
 
 NY = ZoneInfo("America/New_York")
 
@@ -77,21 +86,13 @@ class RolloverLedger(Ledger):
         p.last_financing_time = stamp
 
     def target(self, direction, candle, **kwargs):
-        was_flat = self.position is None
+        # A new Position object means a genuinely new entry: from flat or a direct
+        # reversal. Holds keep the object; rejected entries leave no position.
+        before = self.position
         super().target(direction, candle, **kwargs)
-        if was_flat and self.position is not None:
+        if self.position is not None and self.position is not before:
             field = kwargs.get("field", "open")
             self.entry_mid = (candle.quote("ask", field) + candle.quote("bid", field)) / 2
-
-
-def active_gap(start, end):
-    """Missing active 30m source slot; scheduled weekends alone do not reset rules."""
-    cursor = start
-    while cursor + timedelta(minutes=30) <= end:
-        if expected_open(cursor, "dukascopy"):
-            return True
-        cursor += timedelta(minutes=30)
-    return False
 
 
 def prepare_frames(candles, start, end):
@@ -118,7 +119,7 @@ def prepare_frames(candles, start, end):
         audits[tf] = {
             "bars": len(scored), "first_start": scored[0].timestamp if scored else None,
             "last_end": scored[-1].end if scored else None, "discarded_incomplete_aggregates": len(aggregated) - len(filtered),
-            "unexpected_gap_count": sum(active_gap(a.end, b.timestamp)
+            "unexpected_gap_count": sum(active_gap(a.end, b.timestamp, tf)
                                         for a, b in zip(scored, scored[1:])),
             "too_little_coverage": not scored or (scored[-1].end - scored[0].timestamp).days < 365 * 3 - 7,
         }
@@ -136,88 +137,29 @@ def prepare_frames(candles, start, end):
     return frames, audit
 
 
-def simulate(candles, strategy, case, start, end):
-    config = SimulationConfig(commission_per_order=0, slippage_pips=case.slippage_pips,
-                              financing_per_unit_day=0)
+def research_quotes(case):
+    """Quote transform for a cost case: signals keep the unmodified source candle."""
+    return lambda candle: execution_candle(candle, case)
+
+
+def research_config(case, *, initial_balance=Decimal(1000), size=Decimal(100),
+                    leverage=Decimal(1)):
+    """Explicit zero commission assumption; financing comes from the cost case."""
+    return SimulationConfig(initial_balance, size, leverage, commission_per_order=0,
+                            slippage_pips=case.slippage_pips, financing_per_unit_day=0)
+
+
+def simulate_window(candles, strategy, case, start, end, *, config=None):
+    """One flat-to-flat research window on the shared engine; returns (result, stats)."""
+    config = config or research_config(case)
     ledger = RolloverLedger(config, case)
     times = [c.timestamp for c in candles]
     lo, hi = bisect_left(times, start), bisect_left(times, end)
     selected = candles[max(0, lo - strategy.warmup):hi]
-    history = deque(maxlen=strategy.warmup)
-    pending = None
-    pending_signal = None
-    entry_signal = None
-    entry_costs = None
-    curve = [ledger.snapshot(start, ZERO, "initial")]
-    trades, decisions = [], []
-    previous = None
-    exposure_seconds = ZERO
-    held_since = None
-    cancelled_entries = 0
-    gap_holding_events = 0
-    last = None
-
-    def execute(target, candle, *, field="open", boundary=False, signal=None):
-        nonlocal entry_signal, entry_costs, held_since, exposure_seconds
-        before = len(ledger.trades)
-        was_flat = ledger.position is None
-        costs_before = ledger.embedded_spread, ledger.embedded_slippage
-        ledger.target(target, execution_candle(candle, case), field=field)
-        stamp = candle.open_time if field == "open" else candle.end
-        if len(ledger.trades) > before:
-            t = ledger.trades[-1]
-            spread = ledger.embedded_spread - entry_costs[0]
-            slip = ledger.embedded_slippage - entry_costs[1]
-            exposure_seconds += dec((stamp - held_since).total_seconds())
-            trades.append(dict(asdict(t), entry_signal_time=entry_signal,
-                               exit_signal_time=signal, boundary_exit=boundary,
-                               midpoint_gross_pnl=t.gross_pnl + spread + slip,
-                               spread_cost=spread, slippage_cost=slip,
-                               financing_cost=t.costs, commission_cost=ZERO,
-                               total_cost=spread + slip + t.costs))
-            held_since = None
-        if was_flat and ledger.position:
-            entry_signal = signal
-            entry_costs = costs_before
-            held_since = stamp
-
-    for candle in selected:
-        if previous and active_gap(previous.end, candle.timestamp):
-            history.clear()
-            if ledger.position:
-                gap_holding_events += 1
-            elif pending is not None:
-                pending = None
-                pending_signal = None
-                cancelled_entries += 1
-        eligible = start <= candle.timestamp and candle.end <= end
-        if eligible:
-            ledger.accrue_financing(candle.open_time)
-            if pending_signal is not None:
-                execute(pending, candle, signal=pending_signal)
-            quote = execution_candle(candle, case)
-            curve.append(ledger.snapshot(candle.open_time, ledger.liquidation_price(quote, "open"), "open"))
-            ledger.accrue_financing(candle.end)
-        history.append(candle)
-        pending_signal = None
-        if eligible and len(history) >= strategy.warmup:
-            direction = ledger.position.direction if ledger.position else None
-            pending = (strategy.target(tuple(history), direction) if strategy.name == "Donchian"
-                       else strategy.target(tuple(history)))
-            pending_signal = candle.end
-            decisions.append({"timestamp": candle.end, "target": pending})
-        if eligible:
-            quote = execution_candle(candle, case)
-            curve.append(ledger.snapshot(candle.end, ledger.liquidation_price(quote, "close"), "close"))
-            last = candle
-        previous = candle
-    if last is None:
-        raise ValueError("Empty scored window")
-    if ledger.position:
-        execute(None, last, field="close", boundary=True)
-    curve.append(ledger.snapshot(end, ZERO, "boundary_flat"))
-    result = SimulationResult(config, strategy.name, start, end, ledger, curve, decisions,
-                              sum(start <= c.timestamp < end for c in selected))
+    result = run_policy(selected, strategy, ledger, start=start, end=end,
+                        policy=RESEARCH_WINDOW, quotes=research_quotes(case))
+    trades = result.trade_records
+    last = result.last_candle
     stats = statistics(result)
     stats.update({
         "midpoint_gross_pnl": sum((t["midpoint_gross_pnl"] for t in trades), ZERO),
@@ -225,11 +167,18 @@ def simulate(candles, strategy, case, start, end):
         "modeled_costs": ledger.embedded_spread + ledger.embedded_slippage + ledger.costs,
         "financing_cost": ledger.costs, "commission_cost": ZERO,
         "rollover_events": ledger.rollovers,
-        "exposure_pct": exposure_seconds / dec((end - start).total_seconds()) * 100,
-        "cancelled_gap_entries": cancelled_entries, "gap_holding_events": gap_holding_events,
+        "exposure_pct": result.exposure_seconds / dec((end - start).total_seconds()) * 100,
+        "cancelled_gap_entries": result.cancelled_gap_entries,
+        "gap_holding_events": result.gap_holding_events,
         "boundary_quote_age_hours": dec((end - last.end).total_seconds()) / 3600,
         "boundary_exits": sum(t["boundary_exit"] for t in trades),
     })
     if abs(stats["midpoint_gross_pnl"] - stats["modeled_costs"] - stats["net_pnl"]) > Decimal("1e-20"):
         raise AssertionError("Cost reconciliation failed")
-    return stats, trades, curve
+    return result, stats
+
+
+def simulate(candles, strategy, case, start, end):
+    """Research-study signature: (stats, trade records, equity curve)."""
+    result, stats = simulate_window(candles, strategy, case, start, end)
+    return stats, result.trade_records, result.equity_curve

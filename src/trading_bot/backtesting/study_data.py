@@ -77,6 +77,24 @@ def acquire_capital(cache, progress=print):
     return normalize(candles, completed_before=END)
 
 
+def snapshot_help(snapshot):
+    """Actionable preparation instructions for a missing or invalid snapshot."""
+    import shlex
+
+    output = shlex.quote(str(snapshot))
+    command = "uv run -m trading_bot.backtesting.study_data"
+    return (
+        "Expected an integrity-checked EURUSD MINUTE_30 gzip JSON study snapshot "
+        f"covering {FETCH_START.date()} (warm-up) through {END.date()} "
+        "(scheduled market closures allowed).\n"
+        f"Prepare it with: {command} --source capital-demo --snapshot {output}\n"
+        "If DEMO history is unavailable, explicitly select the alternate source:\n"
+        f"  {command} --source dukascopy --snapshot {output}\n"
+        "For an existing invalid snapshot, choose a new --snapshot path or move "
+        "the invalid file aside before preparing it."
+    )
+
+
 def write_snapshot(path, candles, metadata):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

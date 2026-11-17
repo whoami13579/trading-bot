@@ -6,60 +6,105 @@ import csv
 import json
 import uuid
 from .cache import safe_directory
-from .engine import statistics
-from .models import json_value
+from .models import dec, json_value
 
 
-def make_report(result, dataset, *, period, direction):
-    config = asdict(result.config)
-    missing = [
-        name
-        for name in ("commission_per_order", "slippage_pips", "financing_per_unit_day")
-        if config[name] is None
-    ]
-    if not dataset.candles[0].bid:
-        missing.append("historical_bid_ask_spread")
-    return {
+TIMEFRAME_LABELS = {
+    "MINUTE": "1m",
+    "MINUTE_5": "5m",
+    "MINUTE_15": "15m",
+    "MINUTE_30": "30m",
+    "HOUR": "1H",
+    "HOUR_4": "4H",
+    "DAY": "1D",
+}
+ENVIRONMENT = "DEMO (simulated only)"
+
+
+def build_report(
+    result,
+    stats,
+    dataset,
+    *,
+    adapter,
+    strategy,
+    execution,
+    data_source,
+    holdouts=(),
+    reproducibility=None,
+):
+    """One report contract for every strategy and execution model.
+
+    Pre-existing HMA keys and meanings are unchanged; later keys are additive.
+    """
+    from .engine import pnl_decomposition
+
+    ledger = result.ledger
+    unmodeled = execution.unmodeled(dataset)
+    pnl = pnl_decomposition(result)
+    modeled = pnl["modeled_costs"]
+    report = {
         "schema_version": 1,
         "strategy": result.strategy,
-        "hma_period": period,
-        "direction": direction,
-        "symbol": dataset.symbol,
-        "source": dataset.source,
-        "timeframe": dataset.timeframe,
-        "performance_start": result.start,
-        "performance_end": result.end,
-        "historical_days": (result.end - result.start).total_seconds() / 86400,
-        "candles": result.candles,
-        "configuration": config,
-        "data": dataset.metadata,
-        "statistics": statistics(result),
-        "open_positions": [asdict(result.ledger.position)]
-        if result.ledger.position
-        else [],
-        "trades": [asdict(t) for t in result.ledger.trades],
-        "rejected_entries": result.ledger.rejections,
-        "equity_curve": result.equity_curve,
-        "decisions": result.decisions,
-        "execution": "completed close decision; next available quoted open; no final forced liquidation",
-        "unmodeled_costs": missing,
-        "total_cost_estimate": None
-        if missing
-        else result.ledger.costs
-        + result.ledger.embedded_slippage
-        + result.ledger.embedded_spread,
-        "assumptions": {
-            "account_currency": "USD",
-            "contract": "EURUSD base-currency units; 1 EUR per unit",
-            "margin": "fixed entry notional / configured leverage, collateral only, not an expense",
-            "financing": "configured linear USD/unit/calendar-day debit, not a broker swap schedule",
-            "liquidation": "no assumed broker stop-out; report negative available funds and reject new entries",
-            "valuation": "last observed liquidation-side close; open/close drawdown excludes unseen intrabar paths",
-            "spread_and_slippage": "embedded in execution prices; never deducted again; spread estimate sums executed-leg half-spreads, excludes future liquidation",
-            "balance": "initial + realized net cash P&L, including paid costs of any still-open position",
-            "unknown_costs": "not charged in arithmetic; explicitly unmodeled, never asserted to be zero",
-        },
     }
+    if adapter.key == "hma":  # Original HMA report keys, retained for compatibility.
+        report["hma_period"] = strategy.period
+        report["direction"] = strategy.direction
+    report.update(
+        {
+            "symbol": dataset.symbol,
+            "source": dataset.source,
+            "timeframe": dataset.timeframe,
+            "performance_start": result.start,
+            "performance_end": result.end,
+            "historical_days": (result.end - result.start).total_seconds() / 86400,
+            "candles": result.candles,
+            "configuration": execution.configuration(),
+            "data": dataset.metadata,
+            "statistics": stats,
+            "open_positions": [asdict(ledger.position)] if ledger.position else [],
+            "trades": [asdict(t) for t in ledger.trades],
+            "rejected_entries": ledger.rejections,
+            "equity_curve": result.equity_curve,
+            "decisions": result.decisions,
+            "execution": execution.description,
+            "unmodeled_costs": unmodeled,
+            "total_cost_estimate": None if unmodeled else modeled,
+            "assumptions": execution.assumptions(),
+            # Additive, strategy-neutral fields.
+            "strategy_key": adapter.key,
+            "strategy_description": adapter.describe(strategy),
+            "parameters": adapter.values(strategy),
+            "signal_price": adapter.signal_price,
+            "environment": ENVIRONMENT,
+            "data_source": data_source,
+            "quote_basis": execution.spread_basis(dataset),
+            "execution_model": execution.name,
+            "execution_policy": asdict(execution.policy),
+            "assumed_costs": execution.assumed(dataset),
+            "summary": {
+                # See engine.pnl_decomposition for the exact definitions.
+                "gross_pnl": pnl["gross_pnl"],
+                "realized_gross_pnl": pnl["realized_gross_pnl"],
+                "unrealized_gross_pnl": pnl["unrealized_gross_pnl"],
+                "net_pnl": stats["net_pnl"],
+                "realized_cash_pnl": stats["realized_pnl"],
+                "unrealized_pnl": stats["unrealized_pnl"],
+                "modeled_costs": modeled,
+                "open_entry_spread_and_slippage": pnl["open_entry_spread_and_slippage"],
+                "open_valuation_spread": pnl["open_valuation_spread"],
+                "modeled_cash_costs": ledger.costs,
+                "embedded_spread": ledger.embedded_spread,
+                "embedded_slippage": ledger.embedded_slippage,
+                "last_candle_end": result.last_candle.end if result.last_candle else None,
+            },
+            "trade_details": result.trade_records,
+            "holdout_overlap": list(holdouts),
+            "reproducibility": reproducibility or {},
+            "notes": execution.notes(dataset),
+        }
+    )
+    return report
 
 
 def save_report(report, root):
@@ -85,8 +130,21 @@ def save_report(report, root):
         "net_pnl",
         "balance_after_closing",
     ]
+    details = report.get("trade_details") or []
+    detail_fields = fields + [
+        "entry_signal_time",
+        "exit_signal_time",
+        "boundary_exit",
+        "midpoint_gross_pnl",
+        "spread_cost",
+        "slippage_cost",
+        "financing_cost",
+        "commission_cost",
+        "total_cost",
+    ]
     for filename, rows, names in [
         ("trades.csv", report["trades"], fields),
+        ("trade_details.csv", details, detail_fields),
         (
             "equity.csv",
             report["equity_curve"],
@@ -145,39 +203,38 @@ def print_report_table(lines, note):
     print("=====================================")
 
 
-def print_report(report, path):
-    stats = report["statistics"]
+def units(value):
+    return format(dec(value).normalize(), "f")
 
+
+def report_lines(report, path=None):
+    """Standard fields in a fixed order, then model/data-specific details."""
+    stats = report["statistics"]
+    summary = report["summary"]
+    data = report["data"]
     profit = stats["profit_factor"]
     factor = f"{profit:.4f}" if profit is not None else stats["profit_factor_status"]
+    cached = "cached " if report["data_source"] == "snapshot" else ""
+    timeframe = report["timeframe"]
     lines = [
-        (
-            "Strategy",
-            f"HMA ({report['direction']} / flat), period {report['hma_period']}",
-        ),
+        ("Strategy", report["strategy_description"]),
         ("Symbol", report["symbol"]),
-        ("Data source", report["source"]),
-        ("Timeframe", report["timeframe"]),
+        ("Size", f"{units(report['configuration']['size'])} EUR"),
+        ("Environment", report["environment"]),
+        ("Data source", f"{report['source']} ({cached}{report['quote_basis']})"),
+        ("Timeframe", f"{timeframe} ({TIMEFRAME_LABELS.get(timeframe, timeframe)})"),
         ("Historical days", str(report["historical_days"])),
         (
             "Period",
-            f"{report['performance_start'].isoformat()} to {report['performance_end'].isoformat()}",
+            f"{report['performance_start'].isoformat()} to "
+            f"{report['performance_end'].isoformat()} (UTC, end exclusive)",
         ),
         ("Candles", str(report["candles"])),
-        ("Warm-up candles", str(report["data"]["warmup_candles"])),
-        ("Missing target intervals", str(report["data"]["missing_intervals"])),
-        (
-            "Declared no-quote intervals",
-            str(report["data"]["provider_no_quote_intervals"]),
-        ),
-        ("Unexplained intervals", str(report["data"]["unexplained_missing_intervals"])),
-        (
-            "Sparse source slots",
-            str(report["data"]["missing_source_slots_in_existing_candles"]),
-        ),
+        ("Warm-up candles", str(data.get("warmup_candles", "unavailable"))),
         ("Initial balance", money(stats["initial_balance"])),
         ("Final balance", money(stats["final_balance"])),
         ("Final equity", money(stats["final_equity"])),
+        ("Gross P&L", money(summary["gross_pnl"])),
         ("Net P&L", money(stats["net_pnl"])),
         ("Total return", pct(stats["total_return_pct"])),
         ("Total closed trades", str(stats["total_trades"])),
@@ -191,6 +248,45 @@ def print_report(report, path):
         ),
         ("Realized cash P&L", money(stats["realized_pnl"])),
         ("Unrealized P&L", money(stats["unrealized_pnl"])),
+        ("Modeled costs", money(summary["modeled_costs"])),
+        (
+            "Unmodeled costs",
+            ", ".join(report["unmodeled_costs"]) or "none of the supported assumptions",
+        ),
+        ("Assumed costs", "; ".join(report["assumed_costs"]) or "none"),
+        ("Remaining positions", str(stats["remaining_positions"])),
+        ("Available funds", money(stats["available_funds"])),
+        # Model- and data-specific details.
+        ("Execution model", report["execution_model"]),
+    ]
+    lines += [
+        ("Realized gross P&L", money(summary["realized_gross_pnl"])),
+        ("Unrealized gross P&L", money(summary["unrealized_gross_pnl"])),
+        ("Open valuation spread", money(summary["open_valuation_spread"])),
+    ]
+    if summary["last_candle_end"] is not None:
+        lines.append(("Last candle end", summary["last_candle_end"].isoformat()))
+    if "missing_intervals" in data:  # Provider coverage audit.
+        lines += [
+            ("Missing target intervals", str(data["missing_intervals"])),
+            ("Declared no-quote intervals", str(data["provider_no_quote_intervals"])),
+            ("Unexplained intervals", str(data["unexplained_missing_intervals"])),
+            ("Sparse source slots", str(data["missing_source_slots_in_existing_candles"])),
+        ]
+    if "missing_active_30m_bars" in data:  # Snapshot coverage audit.
+        lines += [
+            ("Missing 30m source bars", str(data["missing_active_30m_bars"])),
+            ("Excluded aggregates", str(data["discarded_incomplete_aggregates"])),
+            ("Unexpected gap events", str(data["unexpected_gap_events"])),
+        ]
+    if "boundary_exits" in stats:  # Research-window execution.
+        lines += [
+            ("Boundary exits", str(stats["boundary_exits"])),
+            ("Cancelled gap entries", str(stats["cancelled_gap_entries"])),
+            ("Gap holding events", str(stats["gap_holding_events"])),
+            ("Exposure", pct(stats["exposure_pct"])),
+        ]
+    lines += [
         (
             "Estimated total costs",
             "unavailable"
@@ -198,18 +294,22 @@ def print_report(report, path):
             else money(report["total_cost_estimate"]),
         ),
         ("Modeled cash costs", money(stats["known_cash_costs"])),
-        (
-            "Unmodeled costs",
-            ", ".join(report["unmodeled_costs"]) or "none of the supported assumptions",
-        ),
-        ("Remaining positions", str(stats["remaining_positions"])),
         ("Remaining base units", str(stats["remaining_base_units"])),
         ("Remaining USD notional", money(stats["remaining_notional_usd"])),
-        ("Available funds", money(stats["available_funds"])),
         ("Rejected entries", str(stats["rejected_entries"])),
-        ("Results", str(path)),
     ]
-    print_report_table(
-        lines,
-        "Costs unavailable from the provider are unmodeled; results are not guaranteed net of all trading costs.",
-    )
+    for overlap in report["holdout_overlap"]:
+        lines.append(
+            (
+                "Holdout overlap",
+                f"{overlap['study']} [{overlap['start'].isoformat()}, "
+                f"{overlap['end'].isoformat()}); not for parameter selection",
+            )
+        )
+    if path is not None:
+        lines.append(("Results", str(path)))
+    return lines
+
+
+def print_report(report, path=None):
+    print_report_table(report_lines(report, path), report["notes"])

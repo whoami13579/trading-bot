@@ -3,13 +3,13 @@
 import argparse
 import csv
 from dataclasses import asdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from decimal import Decimal
-import hashlib
 import json
 from pathlib import Path
 
 from trading_bot.strategies.donchian import DonchianStrategy
+from .evaluation import StageRegistry, chronological_windows, concentration, sha256_file
 from .strategy import HmaStrategy
 from .models import json_value
 from .study_data import START, END, read_snapshot
@@ -26,7 +26,7 @@ def dump(path, value):
 
 
 def digest(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return sha256_file(path)
 
 
 def code_hashes():
@@ -37,13 +37,8 @@ def code_hashes():
 
 
 def splits():
-    days = (END - START).days
-    edges = [START + timedelta(days=round(days * f)) for f in (.4, .5, .6, .7, .8, 1)]
-    windows = [{"name": f"validation_{i+1}", "train_start": START,
-                "train_end": edges[i], "start": edges[i], "end": edges[i+1]}
-               for i in range(4)]
-    windows.append({"name": "holdout", "start": edges[4], "end": END})
-    return windows
+    """Preregistered 40% training, four validations and the final ~20% holdout."""
+    return chronological_windows(START, END, (.4, .5, .6, .7, .8, 1))
 
 
 def write_csv(path, rows):
@@ -55,22 +50,6 @@ def write_csv(path, rows):
         writer = csv.DictWriter(f, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
-
-
-def concentration(trades):
-    values = [Decimal(t["net_pnl"]) for t in trades]
-    winners = sorted((v for v in values if v > 0), reverse=True)
-    net = sum(values, Decimal(0))
-    years = {}
-    for trade in trades:
-        year = str(trade["exit_timestamp"])[:4]
-        years[year] = years.get(year, Decimal(0)) + Decimal(trade["net_pnl"])
-    return {"net_pnl": net, "top_winner": winners[0] if winners else 0,
-            "top5_winners": sum(winners[:5], Decimal(0)),
-            "top5_share_of_positive_pnl_pct": sum(winners[:5], Decimal(0)) /
-            sum(winners) * 100 if winners else None,
-            "net_without_top5_winners": net - sum(winners[:5], Decimal(0)),
-            "pnl_by_exit_year": years}
 
 
 def prepare(snapshot, output):
@@ -119,19 +98,14 @@ def configurations(stage):
         yield tf, "cash", Cash(), COSTS[0]
 
 
+FROZEN_INPUTS = (("study_sha256", "study.json"), ("development_sha256", "development.json"))
+
+
 def run_stage(output, stage):
     study, frames = load_prepared(output)
-    marker = output / f"{stage}_started.json"
-    if marker.exists():
-        raise ValueError(f"{stage} already attempted; inspect registry, do not re-evaluate holdout")
-    if stage == "holdout":
-        freeze = json.loads((output / "freeze.json").read_text())
-        if freeze["study_sha256"] != digest(output / "study.json"):
-            raise ValueError("Frozen study changed")
-        if freeze["development_sha256"] != digest(output / "development.json"):
-            raise ValueError("Development results changed after freeze")
+    registry = StageRegistry(output)
     windows = splits()[:4] if stage == "development" else splits()[4:]
-    dump(marker, {"started_at": datetime.now(timezone.utc), "stage": stage})
+    registry.begin(stage, frozen_inputs=FROZEN_INPUTS)
     rows = []
     for tf, label, strategy, case in configurations(stage):
         for window in windows:
@@ -142,8 +116,7 @@ def run_stage(output, stage):
                       "cost": case.name, "window": window["name"], "start": window["start"],
                       "end": window["end"], "size": 100, "symbol": "EURUSD"}
             # Persist before evaluation so failures and the full search extent are visible.
-            with (output / "attempts.jsonl").open("a") as f:
-                f.write(json.dumps(dict(config, status="started"), default=json_value) + "\n")
+            registry.attempt(config, "started")
             dump(path / "configuration.json", config)
             try:
                 stats, trades, curve = simulate(frames[tf], strategy, case, window["start"], window["end"])
@@ -151,13 +124,10 @@ def run_stage(output, stage):
                 write_csv(path / "trades.csv", trades)
                 write_csv(path / "equity.csv", curve)
             except Exception as exc:
-                with (output / "attempts.jsonl").open("a") as f:
-                    f.write(json.dumps(dict(config, status="failed", error=type(exc).__name__),
-                                       default=json_value) + "\n")
+                registry.attempt(config, "failed", error=type(exc).__name__)
                 raise
             rows.append(dict(config, **stats))
-            with (output / "attempts.jsonl").open("a") as f:
-                f.write(json.dumps(dict(config, status="completed"), default=json_value) + "\n")
+            registry.attempt(config, "completed")
         print(f"{stage}: {tf} {label} {case.name} complete", flush=True)
     dump(output / f"{stage}.json", rows)
     write_csv(output / f"{stage}.csv", rows)
@@ -166,14 +136,11 @@ def run_stage(output, stage):
 
 def freeze(output):
     load_prepared(output)
-    if (output / "freeze.json").exists() or (output / "holdout_started.json").exists():
-        raise ValueError("Already frozen or holdout attempted")
-    dump(output / "freeze.json", {
-        "frozen_at": datetime.now(timezone.utc), "study_sha256": digest(output / "study.json"),
-        "development_sha256": digest(output / "development.json"),
-        "strategy": "20/10, primary 1H; no selection; all planned costs/comparators",
-        "decision": "Proceed once with the preregistered holdout; no assumptions changed",
-    })
+    StageRegistry(output).freeze(
+        FROZEN_INPUTS,
+        strategy="20/10, primary 1H; no selection; all planned costs/comparators",
+        decision="Proceed once with the preregistered holdout; no assumptions changed",
+    )
     print("Strategy, data and assumptions frozen before holdout")
 
 

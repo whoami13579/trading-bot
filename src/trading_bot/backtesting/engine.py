@@ -1,10 +1,18 @@
-"""One deterministic execution/accounting engine, with no broker dependencies."""
+"""One deterministic execution/accounting engine, with no broker dependencies.
+
+Every strategy runs through the same event loop (``simulate``) and the same
+Decimal ``Ledger``. Behavioral differences between the historical HMA mode and
+the Donchian research windows are explicit ``ExecutionPolicy`` values, quote
+transforms and ledger financing models, never strategy-name checks.
+"""
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from decimal import Decimal
-from typing import Protocol, Sequence
+import inspect
+from typing import Callable, Protocol, Sequence
+from .calendar import active_gap
 from .models import Candle, DataError, dec
 from .timeframes import normalize
 
@@ -96,6 +104,11 @@ class Ledger:
         self.rejections = []
         self.events = []
         self.margin_breaches = 0
+        # Per closed trade: embedded spread/slippage and cash costs. Measured as the
+        # change in cumulative counters since the position opened, so it is exact
+        # for flat->open->flat round trips and correct for reversals.
+        self.trade_costs: list[dict] = []
+        self._entry_marks = (ZERO, ZERO)
 
     def liquidation_price(self, candle, field):
         return candle.quote(
@@ -156,6 +169,14 @@ class Ledger:
                     / 2
                 )
             expenses = p.entry_commission + commission + p.financing
+            self.trade_costs.append(
+                {
+                    "spread_cost": self.embedded_spread - self._entry_marks[0],
+                    "slippage_cost": self.embedded_slippage - self._entry_marks[1],
+                    "commission_cost": p.entry_commission + commission,
+                    "financing_cost": p.financing,
+                }
+            )
             self.trades.append(
                 Trade(
                     p.entry_timestamp,
@@ -204,6 +225,7 @@ class Ledger:
                 return
             if self.config.legacy_unfunded:
                 margin = ZERO
+            self._entry_marks = (self.embedded_spread, self.embedded_slippage)
             self.balance -= commission
             self.costs += commission
             self.embedded_slippage += self.config.size * slip
@@ -252,10 +274,90 @@ class Ledger:
 
 
 class Strategy(Protocol):
+    """Common strategy interface used by every backtest.
+
+    ``warmup`` is the number of completed candles in each decision window.
+    ``target`` receives only completed candles (oldest first, the newest just
+    closed) and returns the desired exposure: ``"BUY"`` (long), ``"SELL"``
+    (short) or ``None`` (flat). Position-aware strategies also receive the
+    current simulated direction; position-independent strategies may declare
+    ``target(candles)`` only. Strategies never see fills, cash or future data.
+    """
+
     name: str
     warmup: int
 
-    def target(self, candles: Sequence[Candle]) -> str | None: ...
+    def target(
+        self, candles: Sequence[Candle], position: str | None = None
+    ) -> str | None: ...
+
+
+def decision_function(strategy) -> Callable[[tuple, str | None], str | None]:
+    """Resolve whether a strategy consumes the current position, once per run.
+
+    An explicit ``position_aware`` attribute wins; otherwise a ``target`` that
+    accepts a second positional argument is treated as position-aware.
+    """
+    aware = getattr(strategy, "position_aware", None)
+    if aware is None:
+        try:
+            parameters = inspect.signature(strategy.target).parameters.values()
+        except (TypeError, ValueError):
+            parameters = ()
+        positional = [
+            p
+            for p in parameters
+            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+        ]
+        aware = len(positional) >= 2 or any(
+            p.kind == p.VAR_POSITIONAL for p in parameters
+        )
+    if aware:
+        return lambda window, position: strategy.target(window, position)
+    return lambda window, position: strategy.target(window)
+
+
+@dataclass(frozen=True)
+class ExecutionPolicy:
+    """Explicit execution semantics; the two supported models genuinely differ.
+
+    fill: "next_open" executes a completed-close decision at the next observed
+        candle open. "observed_close" is reserved for the deprecated one-unit
+        quote-buffer adapter in strategies/backtest.py.
+    prime_from_warmup: decisions made on warm-up closes may queue an order for
+        the first performance open (HMA continuous mode). When False, the first
+        decision is the first scored close (research windows).
+    reset_on_active_gap: an unexpected gap in the modeled FX session clears the
+        indicator window, cancels a pending entry and carries a held position
+        (and its pending exit) to the next observed quote.
+    liquidate_at_end: a costed synthetic exit at the last completed close ends
+        every window flat. When False, open positions remain and are marked.
+    """
+
+    name: str
+    fill: str = "next_open"
+    prime_from_warmup: bool = True
+    reset_on_active_gap: bool = False
+    liquidate_at_end: bool = False
+
+    def __post_init__(self):
+        if self.fill not in ("next_open", "observed_close"):
+            raise ValueError("Unknown execution model")
+
+
+CONTINUOUS = ExecutionPolicy("continuous")
+RESEARCH_WINDOW = ExecutionPolicy(
+    "research_window",
+    prime_from_warmup=False,
+    reset_on_active_gap=True,
+    liquidate_at_end=True,
+)
+LEGACY_OBSERVED_CLOSE = ExecutionPolicy("legacy_observed_close", fill="observed_close")
+
+
+def raw_quotes(candle):
+    """Execute against the source candle's own bid/ask (or indicative) prices."""
+    return candle
 
 
 @dataclass
@@ -268,6 +370,229 @@ class SimulationResult:
     equity_curve: list[dict]
     decisions: list[dict]
     candles: int
+    policy: ExecutionPolicy = CONTINUOUS
+    # Closed-trade records with signal/fill times and cost decomposition.
+    trade_records: list[dict] = field(default_factory=list)
+    exposure_seconds: Decimal = ZERO
+    cancelled_gap_entries: int = 0
+    gap_holding_events: int = 0
+    last_candle: Candle | None = None
+    # Quote (after the execution-model transform) behind the final valuation mark.
+    last_quote: Candle | None = None
+
+
+def simulate(
+    candles,
+    strategy: Strategy,
+    ledger: Ledger,
+    *,
+    start,
+    end,
+    policy: ExecutionPolicy = CONTINUOUS,
+    quotes: Callable[[Candle], Candle] = raw_quotes,
+    warmup_extra: int = 0,
+) -> SimulationResult:
+    """Completed close -> target -> fill, under one explicit execution policy.
+
+    ``candles`` must already be ordered, validated and limited to warm-up plus
+    the performance range. Only candles with ``start <= timestamp`` and
+    ``end <= end`` are scored. ``quotes`` maps a source candle to the bid/ask
+    used for fills and marks; signals always see the unmodified source candle.
+    """
+    decide = decision_function(strategy)
+    history = deque(maxlen=strategy.warmup)
+    curve = [ledger.snapshot(start, ZERO, "initial")]
+    decisions, records = [], []
+    pending = pending_signal = None
+    entry_signal = held_since = None
+    previous = last = None
+    count = cancelled = gap_holding = 0
+    exposure = ZERO
+    last_mark = ZERO
+    last_quote_time = None
+    last_quote = None
+
+    def execute(target, quote, *, field, stamp, signal, index=None, boundary=False):
+        nonlocal entry_signal, held_since, exposure
+        before = len(ledger.trades)
+        was_flat = ledger.position is None
+        ledger.target(target, quote, field=field, stamp=stamp, index=index)
+        closed = len(ledger.trades) > before
+        if closed:
+            t = ledger.trades[-1]
+            c = ledger.trade_costs[-1]
+            spread, slip = c["spread_cost"], c["slippage_cost"]
+            exposure += dec((stamp - held_since).total_seconds())
+            records.append(
+                dict(
+                    asdict(t),
+                    entry_signal_time=entry_signal,
+                    exit_signal_time=signal,
+                    boundary_exit=boundary,
+                    midpoint_gross_pnl=t.gross_pnl + spread + slip,
+                    spread_cost=spread,
+                    slippage_cost=slip,
+                    financing_cost=c["financing_cost"],
+                    commission_cost=c["commission_cost"],
+                    total_cost=spread + slip + t.costs,
+                )
+            )
+            held_since = None
+        if ledger.position is not None and (was_flat or closed):
+            entry_signal = signal
+            held_since = stamp
+
+    for index, candle in enumerate(candles):
+        if (
+            policy.reset_on_active_gap
+            and previous is not None
+            and active_gap(previous.end, candle.timestamp, candle.timeframe)
+        ):
+            history.clear()
+            if ledger.position:
+                gap_holding += 1
+            elif pending is not None:
+                pending = pending_signal = None
+                cancelled += 1
+        eligible = start <= candle.timestamp and candle.end <= end
+        quote = quotes(candle) if eligible else None
+        if eligible:
+            count += 1
+            if policy.fill == "next_open":
+                if pending_signal is not None:
+                    execute(
+                        pending,
+                        quote,
+                        field="open",
+                        stamp=candle.open_time,
+                        signal=pending_signal,
+                        index=index,
+                    )
+                else:
+                    ledger.accrue_financing(candle.open_time)
+            # Mark the actual execution opportunity and completed close only;
+            # no intrabar path is guessed.
+            curve.append(
+                ledger.snapshot(
+                    candle.open_time, ledger.liquidation_price(quote, "open"), "open"
+                )
+            )
+            ledger.accrue_financing(candle.end)
+        history.append(candle)
+        # A decision applies to the next open only. Without a gap reset a fresh
+        # decision follows every completed close once the window is full.
+        pending_signal = None
+        if (
+            len(history) >= strategy.warmup
+            and index >= strategy.warmup - 1 + warmup_extra
+            and (eligible or policy.prime_from_warmup)
+        ):
+            direction = ledger.position.direction if ledger.position else None
+            pending = decide(tuple(history), direction)
+            pending_signal = candle.end
+            if eligible:
+                decisions.append(
+                    {"timestamp": candle.end, "target": pending, "index": index}
+                )
+                if policy.fill == "observed_close":
+                    ledger.target(
+                        pending, candle, field="close", stamp=candle.end, index=index
+                    )
+        if eligible:
+            last_mark = ledger.liquidation_price(quote, "close")
+            last_quote = quote
+            last_quote_time = candle.end
+            curve.append(ledger.snapshot(candle.end, last_mark, "close"))
+            last = candle
+        previous = candle
+
+    if policy.liquidate_at_end:
+        if last is None:
+            raise ValueError("Empty scored window")
+        if ledger.position:
+            execute(
+                None,
+                quotes(last),
+                field="close",
+                stamp=last.end,
+                signal=None,
+                boundary=True,
+            )
+        curve.append(ledger.snapshot(end, ZERO, "boundary_flat"))
+    elif count:
+        ledger.accrue_financing(end)
+        final = ledger.snapshot(end, last_mark, "final_mark")
+        final["quote_timestamp"] = last_quote_time
+        curve.append(final)
+    return SimulationResult(
+        ledger.config,
+        strategy.name,
+        start,
+        end,
+        ledger,
+        curve,
+        decisions,
+        count,
+        policy,
+        records,
+        exposure,
+        cancelled,
+        gap_holding,
+        last,
+        last_quote,
+    )
+
+
+def pnl_decomposition(result) -> dict:
+    """Explicit P&L definitions, reconciled exactly to final equity.
+
+    - gross_pnl: midpoint (or indicative-price) P&L before every cost:
+      realized_gross_pnl (closed trades) + unrealized_gross_pnl (an open
+      position from its entry midpoint to the final closing midpoint).
+    - modeled_costs: costs actually incurred: executed-leg spread and slippage,
+      commission and financing, including those already paid by an open position.
+    - open_valuation_spread: the exit half-spread implied by marking an open
+      position at its liquidation side (bid for longs, ask for shorts). It has not
+      been executed, so it is not a modeled cost, but net equity already reflects it.
+    - net_pnl = gross_pnl - modeled_costs - open_valuation_spread
+              = realized cash P&L + unrealized (liquidation-side) P&L.
+    """
+    ledger = result.ledger
+    realized = sum(
+        (
+            t.gross_pnl + c["spread_cost"] + c["slippage_cost"]
+            for t, c in zip(ledger.trades, ledger.trade_costs)
+        ),
+        ZERO,
+    )
+    final = result.equity_curve[-1]
+    position = ledger.position
+    unrealized = valuation = entry_legs = ZERO
+    if position is not None:
+        quote = result.last_quote
+        mark = final["mark_price"]
+        mid = (
+            (quote.ask.close + quote.bid.close) / 2 if quote.bid else quote.prices.close
+        )
+        valuation = abs(mid - mark) * position.size
+        entry_legs = (ledger.embedded_spread - ledger._entry_marks[0]) + (
+            ledger.embedded_slippage - ledger._entry_marks[1]
+        )
+        unrealized = final["unrealized_pnl"] + valuation + entry_legs
+    modeled = ledger.costs + ledger.embedded_slippage + ledger.embedded_spread
+    gross = realized + unrealized
+    net = final["equity"] - result.config.initial_balance
+    if abs(gross - modeled - valuation - net) > Decimal("1e-18"):
+        raise AssertionError("Gross/net P&L reconciliation failed")
+    return {
+        "gross_pnl": gross,
+        "realized_gross_pnl": realized,
+        "unrealized_gross_pnl": unrealized,
+        "modeled_costs": modeled,
+        "open_entry_spread_and_slippage": entry_legs,
+        "open_valuation_spread": valuation,
+        "net_pnl": net,
+    }
 
 
 def run(
@@ -280,64 +605,25 @@ def run(
     execution="next_open",
     warmup_extra=0,
 ) -> SimulationResult:
-    """Completed close -> target -> next actual open. Never liquidates at final close.
+    """Continuous mode: completed close -> target -> next actual open.
 
-    observed_close is reserved for the deprecated quote-buffer adapter, never the CLI.
-    It uses this same engine/ledger while retaining its explicitly optimistic old fills.
+    Never liquidates at the final close. observed_close is reserved for the
+    deprecated quote-buffer adapter, never the CLI. It uses this same engine and
+    ledger while retaining its explicitly optimistic old fills.
     """
     if execution not in ("next_open", "observed_close"):
         raise ValueError("Unknown execution model")
     candles = normalize(candles, completed_before=end)
     if candles and any(c.symbol != "EURUSD" for c in candles):
         raise DataError("Only EURUSD unit contracts and USD accounts are supported")
-    ledger = Ledger(config)
-    history = deque(maxlen=strategy.warmup)
-    curve = [ledger.snapshot(start, ZERO, "initial")]
-    decisions = []
-    pending = None
-    ready = False
-    count = 0
-    last_mark = ZERO
-    last_quote_time = None
-    for index, candle in enumerate(candles):
-        eligible = start <= candle.timestamp < end
-        if eligible:
-            count += 1
-            if execution == "next_open" and ready:
-                ledger.target(pending, candle, stamp=candle.open_time, index=index)
-            # Mark both the actual execution opportunity and completed close; no intrabar path guessed.
-            curve.append(
-                ledger.snapshot(
-                    candle.open_time, ledger.liquidation_price(candle, "open"), "open"
-                )
-            )
-            ledger.accrue_financing(candle.end)
-        history.append(candle)
-        if (
-            len(history) >= strategy.warmup
-            and index >= strategy.warmup - 1 + warmup_extra
-        ):
-            pending = strategy.target(tuple(history))
-            ready = True
-            if eligible:
-                decisions.append(
-                    {"timestamp": candle.end, "target": pending, "index": index}
-                )
-                if execution == "observed_close":
-                    ledger.target(
-                        pending, candle, field="close", stamp=candle.end, index=index
-                    )
-        if eligible:
-            last_mark = ledger.liquidation_price(candle, "close")
-            last_quote_time = candle.end
-            curve.append(ledger.snapshot(candle.end, last_mark, "close"))
-    if count:
-        ledger.accrue_financing(end)
-        final = ledger.snapshot(end, last_mark, "final_mark")
-        final["quote_timestamp"] = last_quote_time
-        curve.append(final)
-    return SimulationResult(
-        config, strategy.name, start, end, ledger, curve, decisions, count
+    return simulate(
+        candles,
+        strategy,
+        Ledger(config),
+        start=start,
+        end=end,
+        policy=CONTINUOUS if execution == "next_open" else LEGACY_OBSERVED_CLOSE,
+        warmup_extra=warmup_extra,
     )
 
 

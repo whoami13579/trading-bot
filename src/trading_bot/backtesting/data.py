@@ -1,4 +1,9 @@
-"""Provider-neutral warm-up, validated cache snapshots and completeness reports."""
+"""Provider-neutral warm-up, validated cache snapshots and completeness reports.
+
+Two data sources feed every strategy through the same ``Dataset`` contract:
+``load_history`` (Dukascopy/yfinance downloads behind an integrity-checked
+cache) and ``load_snapshot`` (an immutable, fingerprinted study snapshot).
+"""
 
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -8,6 +13,13 @@ from .calendar import audit_coverage
 from .models import Candle, Dataset, DataError, json_value, utc
 from .providers import provider
 from .timeframes import duration, floor_time, normalize
+
+
+# Download padding never depends on a strategy's smaller warm-up, so strategies
+# sharing a source/symbol/timeframe/range reuse one cached normalized download.
+# 48 is the HMA16 window, so existing HMA cache entries remain valid.
+SHARED_WARMUP_FLOOR = 48
+SNAPSHOT_TIMEFRAMES = ("MINUTE_30", "HOUR", "HOUR_4")
 
 
 def warmup_start(start, timeframe, candles):
@@ -30,7 +42,7 @@ def load_history(
         raise DataError(
             "Historical boundaries must be completed, ordered and UTC-timeframe aligned"
         )
-    fetch_start = warmup_start(start, timeframe, warmup)
+    fetch_start = warmup_start(start, timeframe, max(warmup, SHARED_WARMUP_FLOOR))
     key = json.dumps(
         {
             "schema": 3,
@@ -127,11 +139,86 @@ def load_history(
         }
     )
     # Fingerprint normalized raw observations, independent of cache/download metadata.
-    candle_dicts = [c.as_dict() for c in candles]
-    encoded = json.dumps(
-        candle_dicts, default=json_value, sort_keys=True, allow_nan=False
-    )
-    metadata["data_sha256"] = hashlib.sha256(encoded.encode()).hexdigest()
+    metadata["data_sha256"] = fingerprint(candles)
     if saved is None:
         cache.put(key, {"candles": raw_candle_dicts, "metadata": raw_metadata})
     return Dataset(tuple(candles), start, end, source, symbol, timeframe, metadata)
+
+
+def fingerprint(candles):
+    """SHA256 of normalized candle observations, independent of any metadata."""
+    encoded = json.dumps(
+        [c.as_dict() for c in candles], default=json_value, sort_keys=True, allow_nan=False
+    )
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def load_snapshot(path, symbol, timeframe, start, end, warmup, *, required_warmup=None):
+    """Use an immutable study snapshot; never downloads, authenticates or refreshes.
+
+    The snapshot's own fingerprint is verified, then the same audited
+    resampling as the research study (missing 30m constituents exclude an
+    aggregate; nothing is forward-filled) produces the requested timeframe.
+    """
+    from .study_data import START, END, read_snapshot
+    from .study_engine import prepare_frames
+
+    start, end = utc(start), utc(end)
+    required = warmup if required_warmup is None else required_warmup
+    if symbol != "EURUSD":
+        raise DataError("Study snapshots contain EURUSD only")
+    if timeframe not in SNAPSHOT_TIMEFRAMES:
+        raise DataError(
+            f"Study snapshots are 30m bid/ask; supported timeframes are "
+            f"{', '.join(SNAPSHOT_TIMEFRAMES)}. Use --data-source dukascopy for {timeframe}"
+        )
+    if not START <= start < end <= END:
+        raise DataError(
+            f"Snapshot backtests require {START.date()} <= start < end <= {END.date()}"
+        )
+    if any(floor_time(t, timeframe) != t for t in (start, end)):
+        raise DataError(f"Start and end must align to completed UTC {timeframe} candles")
+    candles, snapshot = read_snapshot(path)
+    frames, audit = prepare_frames(candles, start, end)
+    bars = frames[timeframe]
+    prior = [c for c in bars if c.end <= start]
+    performance = [c for c in bars if start <= c.timestamp and c.end <= end]
+    label = {"MINUTE_30": "30m", "HOUR": "1H", "HOUR_4": "4H"}[timeframe]
+    if len(prior) < required:
+        raise DataError(
+            f"Insufficient {label} warm-up: need {required} completed bars before "
+            f"{start.isoformat()}, found {len(prior)}"
+        )
+    if not performance:
+        raise DataError(
+            f"Insufficient data: no completed {label} candles in the requested range"
+        )
+    used = tuple(prior[-warmup:] + performance) if warmup else tuple(performance)
+    coverage = audit["timeframes"][timeframe]
+    metadata = {
+        "snapshot": str(path),
+        "snapshot_metadata": snapshot,
+        "snapshot_candles_sha256": snapshot.get("candles_sha256"),
+        "quote_model": "historical bid/ask candles" if candles[0].bid
+        else "midpoint only; spread assumed by the execution model",
+        "source_resolution": candles[0].timeframe,
+        "missing_active_30m_bars": audit["missing_active_30m_bars"],
+        "missing_timestamps": audit["missing_timestamps"],
+        "sparse_30m_source_candles": audit["sparse_30m_source_candles"],
+        "missing_minute_slots_within_observed_bars":
+            audit["missing_minute_slots_within_observed_bars"],
+        "discarded_incomplete_aggregates": coverage["discarded_incomplete_aggregates"],
+        "unexpected_gap_events": coverage["unexpected_gap_count"],
+        "calendar": audit["calendar"],
+        "forward_filled": False,
+        "warmup_candles": min(len(prior), warmup),
+        "downloaded_warmup_candles": len(prior),
+        "performance_candles": len(performance),
+        "actual_first": used[0].timestamp.isoformat(),
+        "actual_last_end": used[-1].end.isoformat(),
+        "requested_performance_start": start.isoformat(),
+        "requested_performance_end": end.isoformat(),
+        "data_sha256": fingerprint(used),
+    }
+    source = snapshot.get("source", candles[0].source)
+    return Dataset(used, start, end, source, symbol, timeframe, metadata)
