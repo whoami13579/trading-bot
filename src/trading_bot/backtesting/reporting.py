@@ -128,14 +128,25 @@ c.onmousemove=e=>{let i=Math.round((e.offsetX-55)/(c.clientWidth-75)*(data.lengt
     return destination
 
 
+def money(value):
+    return f"${value:,.4f}"
+
+
+def pct(value):
+    return "unavailable" if value is None else f"{value:.4f}%"
+
+
+def print_report_table(lines, note):
+    """Common terminal layout; callers supply strategy-specific fields and notes."""
+    print("========== BACKTEST REPORT ==========")
+    for name, value in lines:
+        print(f"{name + ':':24} {value}")
+    print(note)
+    print("=====================================")
+
+
 def print_report(report, path):
     stats = report["statistics"]
-
-    def money(v):
-        return f"${v:,.4f}"
-
-    def pct(v):
-        return "unavailable" if v is None else f"{v:.4f}%"
 
     profit = stats["profit_factor"]
     factor = f"{profit:.4f}" if profit is not None else stats["profit_factor_status"]
@@ -198,10 +209,7 @@ def print_report(report, path):
         ("Rejected entries", str(stats["rejected_entries"])),
         ("Results", str(path)),
     ]
-    print("========== BACKTEST REPORT ==========")
-    for name, value in lines:
-        print(f"{name + ':':24} {value}")
-    print(
-        "Costs unavailable from the provider are unmodeled; results are not guaranteed net of all trading costs."
+    print_report_table(
+        lines,
+        "Costs unavailable from the provider are unmodeled; results are not guaranteed net of all trading costs.",
     )
-    print("=====================================")

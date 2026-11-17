@@ -40,3 +40,8 @@ test.json
 # Historical market data and generated simulation artifacts
 /.cache/
 /backtests/
+
+# Local Donchian research exports; keep the plan, guide and results summary.
+/research/donchian/*.csv
+/research/donchian/*.json
+/research/donchian/*.jsonl
