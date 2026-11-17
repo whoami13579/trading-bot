@@ -76,15 +76,26 @@ def audit_coverage(
     }
 
 
-def active_gap(start, end):
-    """True if [start, end) contains a missing active 30m Dukascopy-session slot.
+def active_gap(start, end, timeframe="MINUTE_30"):
+    """True if a whole candle slot of ``timeframe`` in [start, end) should have traded.
 
-    Scheduled weekend closures alone are not gaps; an unexpected absence of
-    quotes during the modeled FX week is.
+    ``start`` is the previous candle's end and ``end`` the next candle's start,
+    so every whole ``timeframe`` slot between them is a missing candle. A slot is
+    expected if any part of it lies inside the DST-aware New York Sunday 17:00 to
+    Friday 17:00 FX week (a 4H slot that starts while closed but contains the
+    Sunday open still counts). Scheduled weekend closures alone are not gaps.
+    Session boundaries fall on whole New York hours, so probing each slot every
+    min(timeframe, 30 minutes) is exact. For MINUTE_30, HOUR and HOUR_4 slots
+    aligned to their timeframe the probes are identical to the original 30m scan.
     """
+    step = duration(timeframe)
+    probe = min(step, timedelta(minutes=30))
     cursor = start
-    while cursor + timedelta(minutes=30) <= end:
-        if expected_open(cursor, "dukascopy"):
-            return True
-        cursor += timedelta(minutes=30)
+    while cursor + step <= end:
+        moment = cursor
+        while moment < cursor + step:
+            if expected_open(moment, "dukascopy"):
+                return True
+            moment += probe
+        cursor += step
     return False

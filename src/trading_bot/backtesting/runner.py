@@ -66,6 +66,7 @@ class Plan:
     end: datetime
     holdouts: tuple
     now: datetime
+    specification: dict = field(default_factory=dict)
 
 
 class PlanError(ValueError):
@@ -141,16 +142,23 @@ def plan(request: BacktestRequest, *, now=None) -> Plan:
     start, end = utc(start), utc(end)
     if start >= end:
         raise PlanError("--start must be before --end")
-    holdouts = holdout_check(
-        adapter.key,
-        adapter.values(strategy),
-        request.symbol,
-        start,
-        end,
-        allow=request.allow_holdout_overlap,
-    )
+    specification = {
+        "strategy": adapter.key,
+        "parameters": adapter.values(strategy),
+        "symbol": request.symbol,
+        "timeframe": time_frame,
+        "data_source": source,
+        "execution_model": execution.name,
+        "cost_case": execution.case.name if execution.name == "research" else None,
+        "size": request.size,
+        "initial_balance": request.initial_balance,
+        "leverage": request.leverage,
+    }
+    # Dataset identity is unknown until the snapshot is read; execute() rechecks it.
+    holdouts = holdout_check(specification, start, end,
+                             allow=request.allow_holdout_overlap)
     return Plan(request, adapter, strategy, time_frame, source, execution, start, end,
-                tuple(holdouts), now)
+                tuple(holdouts), now, specification)
 
 
 def load(plan: Plan):
@@ -197,6 +205,12 @@ def execute(plan: Plan, dataset=None):
         dataset = load(plan)
     if not dataset.candles:
         raise DataError("No candles available for the requested range")
+    holdouts = plan.holdouts
+    if holdouts and plan.data_source == "snapshot":
+        holdouts = tuple(holdout_check(
+            plan.specification, plan.start, plan.end,
+            dataset_sha256=dataset.metadata.get("snapshot_candles_sha256"),
+            allow=plan.request.allow_holdout_overlap))
     result, stats = plan.execution.simulate(dataset.candles, plan.strategy, plan.start,
                                             plan.end)
     record = configuration_record(plan, dataset)
@@ -208,7 +222,7 @@ def execute(plan: Plan, dataset=None):
         strategy=plan.strategy,
         execution=plan.execution,
         data_source=plan.data_source,
-        holdouts=plan.holdouts,
+        holdouts=holdouts,
         reproducibility={
             "configuration_sha256": canonical_sha256(record),
             "data_sha256": dataset.metadata.get("data_sha256"),

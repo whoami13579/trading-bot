@@ -69,36 +69,103 @@ def concentration(trades):
             "pnl_by_exit_year": years}
 
 
+# Account terms every preregistered study configuration used (study.json, PLAN.md).
+STUDY_ACCOUNT = {"size": Decimal(100), "initial_balance": Decimal(1000), "leverage": Decimal(1)}
+
+
+@dataclass(frozen=True)
+class Specification:
+    """One configuration a study preregistered and scored on its holdout."""
+
+    role: str  # primary | primary_cost_sensitivity | robustness | comparator
+    strategy: str
+    parameters: dict
+    timeframe: str
+    execution_model: str
+    cost_case: str
+
+
 @dataclass(frozen=True)
 class Holdout:
-    """A frozen, already-evaluated holdout; not for parameter selection."""
+    """A frozen, already-evaluated holdout; not for parameter selection.
+
+    Only the complete preregistered specifications (strategy parameters,
+    timeframe, execution model and cost case, on the registered dataset and
+    account terms) are exempt. Anything else for a protected strategy is a new
+    experiment and must not be evaluated on this period without acknowledgement.
+    """
 
     study: str
     symbol: str
     start: datetime
     end: datetime
-    # Strategy keys whose preregistered parameters were scored on this holdout.
-    # Any other parameter set is a new specification and must not be chosen here.
+    data_source: str
+    dataset_sha256: str
+    account: dict
     protected_strategies: tuple[str, ...]
-    preregistered: dict
+    specifications: tuple[Specification, ...]
 
     def overlaps(self, symbol, start, end):
         return symbol == self.symbol and start < self.end and self.start < end
 
+    def match(self, spec, dataset_sha256=None):
+        """Role of an exactly preregistered specification, else None.
+
+        ``dataset_sha256`` None means the dataset has not been read yet; the
+        runner repeats the check with the actual snapshot fingerprint.
+        """
+        if spec["data_source"] != self.data_source:
+            return None
+        if dataset_sha256 is not None and dataset_sha256 != self.dataset_sha256:
+            return None
+        if any(Decimal(str(spec[k])) != v for k, v in self.account.items()):
+            return None
+        for s in self.specifications:
+            if (s.strategy, s.parameters, s.timeframe, s.execution_model, s.cost_case) == (
+                spec["strategy"], spec["parameters"], spec["timeframe"],
+                spec["execution_model"], spec["cost_case"],
+            ):
+                return s.role
+        return None
+
+
+def _role(label, timeframe, case):
+    if label.startswith("donchian_"):
+        if timeframe != "HOUR":
+            return "robustness"
+        return "primary" if case == "base" else "primary_cost_sensitivity"
+    return "comparator"
+
 
 def registered_holdouts():
-    """Holdouts frozen by completed studies in this repository."""
-    from .study_data import START, END
+    """Holdouts frozen by completed studies, derived from their own stage plans."""
+    from .donchian_study import configurations, splits
 
-    window = chronological_windows(START, END)[-1]
+    specs = []
+    for timeframe, label, strategy, case in configurations("holdout"):
+        if label.startswith("donchian_"):
+            key = "donchian"
+            parameters = {"entry_lookback": strategy.entry, "exit_lookback": strategy.exit}
+        elif label.startswith("hma_"):
+            key = "hma"
+            parameters = {"hma_period": strategy.period, "direction": strategy.direction}
+        else:
+            continue  # The cash comparator is not a backtestable strategy.
+        specs.append(Specification(_role(label, timeframe, case.name), key, parameters,
+                                   timeframe, "research", case.name))
+    window = splits()[-1]
     return (
         Holdout(
             "research/donchian",
             "EURUSD",
             window["start"],
             window["end"],
+            "snapshot",
+            # Canonical candle fingerprint of the frozen study snapshot (study.json).
+            "f7ad8f615eb2dacd9a79417934f99f09a18da32f3c291f37ed605c4db1eda72a",
+            STUDY_ACCOUNT,
             ("donchian",),
-            {"donchian": {"entry_lookback": 20, "exit_lookback": 10}},
+            tuple(specs),
         ),
     )
 
@@ -107,30 +174,50 @@ class HoldoutReuseError(ValueError):
     """A non-preregistered specification would be evaluated on a frozen holdout."""
 
 
-def holdout_check(strategy_key, parameters, symbol, start, end, *, allow=False):
-    """Return overlap disclosures; refuse unacknowledged non-preregistered reuse."""
+def _describe(spec):
+    return (f"{spec['strategy']} {spec['parameters']}, {spec['timeframe']}, "
+            f"{spec['execution_model']} execution, cost case {spec['cost_case']}, "
+            f"{spec['data_source']} data, size {spec['size']}, initial balance "
+            f"{spec['initial_balance']}, leverage {spec['leverage']}")
+
+
+def holdout_check(spec, start, end, *, dataset_sha256=None, allow=False):
+    """Return overlap disclosures; refuse unacknowledged non-preregistered reuse.
+
+    ``spec`` keys: strategy, parameters, symbol, timeframe, data_source,
+    execution_model, cost_case, size, initial_balance, leverage.
+    """
     overlaps = []
     for holdout in registered_holdouts():
-        if not holdout.overlaps(symbol, start, end):
+        if not holdout.overlaps(spec["symbol"], start, end):
             continue
-        protected = strategy_key in holdout.protected_strategies
-        preregistered = holdout.preregistered.get(strategy_key) == parameters
-        if protected and not preregistered and not allow:
+        role = holdout.match(spec, dataset_sha256)
+        protected = spec["strategy"] in holdout.protected_strategies
+        if protected and role is None and not allow:
             raise HoldoutReuseError(
                 f"[{start.isoformat()}, {end.isoformat()}) overlaps the frozen "
                 f"{holdout.study} holdout [{holdout.start.isoformat()}, "
-                f"{holdout.end.isoformat()}); {strategy_key} parameters {parameters} "
-                "were not preregistered for it. Evaluate new parameters outside the "
-                "holdout, or pass --allow-holdout-overlap to acknowledge that the "
-                "result must not be used for parameter selection."
+                f"{holdout.end.isoformat()}). This configuration ({_describe(spec)}) is "
+                "not one of the study's preregistered holdout specifications (primary: "
+                "donchian 20/10, HOUR, research execution, base costs, on the frozen "
+                "snapshot with size 100, balance 1000, leverage 1). Evaluate it outside "
+                "the holdout, or pass --allow-holdout-overlap to acknowledge that the "
+                "result must not be used for parameter or configuration selection."
             )
+        verified = None
+        if spec["data_source"] != holdout.data_source:
+            verified = False
+        elif dataset_sha256 is not None:
+            verified = dataset_sha256 == holdout.dataset_sha256
         overlaps.append(
             {
                 "study": holdout.study,
                 "start": holdout.start,
                 "end": holdout.end,
-                "preregistered_specification": preregistered if protected else None,
-                "acknowledged_reuse": bool(protected and not preregistered),
+                "preregistered_role": role,
+                "preregistered_specification": role is not None,
+                "registered_dataset": verified,
+                "acknowledged_reuse": bool(protected and role is None),
             }
         )
     return overlaps

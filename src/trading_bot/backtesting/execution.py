@@ -84,8 +84,10 @@ class ContinuousExecution:
 
     def notes(self, dataset):
         return (
-            "Gross P&L = net P&L + modeled costs; open positions are valued at the "
-            "liquidation-side close. All orders are simulated.\n"
+            "Gross P&L is midpoint price P&L before costs, including any open position "
+            "at the closing midpoint. Net P&L marks open positions at the liquidation "
+            "side, so it also excludes the unexecuted exit half-spread (open valuation "
+            "spread). All orders are simulated.\n"
             "Costs unavailable from the provider are unmodeled; results are not "
             "guaranteed net of all trading costs."
         )

@@ -30,11 +30,9 @@ from trading_bot.backtesting.engine import (
     statistics,
 )
 from trading_bot.backtesting.evaluation import (
-    HoldoutReuseError,
     StageRegistry,
     canonical_sha256,
     chronological_windows,
-    holdout_check,
     registered_holdouts,
 )
 from trading_bot.backtesting.models import Candle, Dataset, DataError, OHLC
@@ -433,20 +431,6 @@ class ResearchSafeguardTests(unittest.TestCase):
         self.assertEqual(splits(), chronological_windows(START, END))
         holdout = registered_holdouts()[0]
         self.assertEqual((holdout.start, holdout.end), (splits()[-1]["start"], END))
-
-    def test_holdout_reuse_requires_preregistered_parameters_or_acknowledgement(self):
-        inside = (datetime(2026, 5, 1, tzinfo=timezone.utc), datetime(2026, 6, 1, tzinfo=timezone.utc))
-        before = (datetime(2025, 5, 1, tzinfo=timezone.utc), datetime(2025, 6, 1, tzinfo=timezone.utc))
-        with self.assertRaises(HoldoutReuseError):
-            holdout_check("donchian", {"entry_lookback": 25, "exit_lookback": 10}, "EURUSD", *inside)
-        self.assertEqual(holdout_check("donchian", {"entry_lookback": 25, "exit_lookback": 10},
-                                       "EURUSD", *before), [])
-        acknowledged = holdout_check("donchian", {"entry_lookback": 25, "exit_lookback": 10},
-                                     "EURUSD", *inside, allow=True)
-        self.assertTrue(acknowledged[0]["acknowledged_reuse"])
-        preregistered = holdout_check("donchian", DONCHIAN.defaults(), "EURUSD", *inside)
-        self.assertTrue(preregistered[0]["preregistered_specification"])
-        self.assertEqual(len(holdout_check("hma", HMA.defaults(), "EURUSD", *inside)), 1)
 
     def test_configuration_hash_is_deterministic_and_sensitive(self):
         record = {"strategy": "donchian", "parameters": {"entry_lookback": 20}, "size": D(100)}

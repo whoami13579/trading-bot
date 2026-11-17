@@ -377,6 +377,8 @@ class SimulationResult:
     cancelled_gap_entries: int = 0
     gap_holding_events: int = 0
     last_candle: Candle | None = None
+    # Quote (after the execution-model transform) behind the final valuation mark.
+    last_quote: Candle | None = None
 
 
 def simulate(
@@ -408,6 +410,7 @@ def simulate(
     exposure = ZERO
     last_mark = ZERO
     last_quote_time = None
+    last_quote = None
 
     def execute(target, quote, *, field, stamp, signal, index=None, boundary=False):
         nonlocal entry_signal, held_since, exposure
@@ -443,7 +446,7 @@ def simulate(
         if (
             policy.reset_on_active_gap
             and previous is not None
-            and active_gap(previous.end, candle.timestamp)
+            and active_gap(previous.end, candle.timestamp, candle.timeframe)
         ):
             history.clear()
             if ledger.position:
@@ -497,6 +500,7 @@ def simulate(
                     )
         if eligible:
             last_mark = ledger.liquidation_price(quote, "close")
+            last_quote = quote
             last_quote_time = candle.end
             curve.append(ledger.snapshot(candle.end, last_mark, "close"))
             last = candle
@@ -535,7 +539,60 @@ def simulate(
         cancelled,
         gap_holding,
         last,
+        last_quote,
     )
+
+
+def pnl_decomposition(result) -> dict:
+    """Explicit P&L definitions, reconciled exactly to final equity.
+
+    - gross_pnl: midpoint (or indicative-price) P&L before every cost:
+      realized_gross_pnl (closed trades) + unrealized_gross_pnl (an open
+      position from its entry midpoint to the final closing midpoint).
+    - modeled_costs: costs actually incurred: executed-leg spread and slippage,
+      commission and financing, including those already paid by an open position.
+    - open_valuation_spread: the exit half-spread implied by marking an open
+      position at its liquidation side (bid for longs, ask for shorts). It has not
+      been executed, so it is not a modeled cost, but net equity already reflects it.
+    - net_pnl = gross_pnl - modeled_costs - open_valuation_spread
+              = realized cash P&L + unrealized (liquidation-side) P&L.
+    """
+    ledger = result.ledger
+    realized = sum(
+        (
+            t.gross_pnl + c["spread_cost"] + c["slippage_cost"]
+            for t, c in zip(ledger.trades, ledger.trade_costs)
+        ),
+        ZERO,
+    )
+    final = result.equity_curve[-1]
+    position = ledger.position
+    unrealized = valuation = entry_legs = ZERO
+    if position is not None:
+        quote = result.last_quote
+        mark = final["mark_price"]
+        mid = (
+            (quote.ask.close + quote.bid.close) / 2 if quote.bid else quote.prices.close
+        )
+        valuation = abs(mid - mark) * position.size
+        entry_legs = (ledger.embedded_spread - ledger._entry_marks[0]) + (
+            ledger.embedded_slippage - ledger._entry_marks[1]
+        )
+        unrealized = final["unrealized_pnl"] + valuation + entry_legs
+    modeled = ledger.costs + ledger.embedded_slippage + ledger.embedded_spread
+    gross = realized + unrealized
+    net = final["equity"] - result.config.initial_balance
+    if abs(gross - modeled - valuation - net) > Decimal("1e-18"):
+        raise AssertionError("Gross/net P&L reconciliation failed")
+    return {
+        "gross_pnl": gross,
+        "realized_gross_pnl": realized,
+        "unrealized_gross_pnl": unrealized,
+        "modeled_costs": modeled,
+        "open_entry_spread_and_slippage": entry_legs,
+        "open_valuation_spread": valuation,
+        "net_pnl": net,
+    }
 
 
 def run(

@@ -67,14 +67,26 @@ quote transform and a ledger. The two existing semantics are explicit models:
 | --- | --- | --- |
 | Decision → fill | completed close → next observed open | same |
 | First fill | warm-up close may queue the first scored open | first decision is the first scored close |
-| Unexpected active-session gap | position and signals carry on | cancel pending entry, keep held position and its pending exit, reset warm-up |
+| Unexpected active-session gap | position and signals carry on | cancel pending entry, keep held position and its pending exit, reset warm-up (missing candle slots of the series' own timeframe, see below) |
 | End of range | position stays open, marked at liquidation-side close | costed synthetic exit at last completed close |
 | Fill prices | source bid/ask (indicative OHLC for yfinance) | bid/ask rebuilt around midpoint × cost-case spread multiple (1 pip assumed for midpoint data) |
 | Slippage / commission | optional; **unmodeled** unless given | cost case (0.1 / 0.5 pip); commission **assumed 0** |
 | Financing | optional linear USD/unit/day | cost case: 0 (historical financing omitted) or 5%/yr at NY 17:00, Wednesday triple |
 
 Either strategy can run under either model (`--execution-model`), on either data
-source. A third policy, `LEGACY_OBSERVED_CLOSE`, exists only for the deprecated
+source.
+
+**Gap detection** (`calendar.active_gap(prev_end, next_start, timeframe)`): every
+whole candle slot of the series' timeframe between two consecutive candles is a
+missing candle. It is an *unexpected* gap if any part of the slot lies inside the
+DST-aware New York Sunday 17:00 – Friday 17:00 week, so 1m/5m/15m gaps are
+detected and a 4H slot that straddles the Sunday open or Friday close counts.
+Scheduled weekend closures are not gaps. Session edges fall on whole New York
+hours, so each slot is probed every min(timeframe, 30 minutes); for aligned
+30m/1H/4H slots this is exactly the original 30-minute scan. Nothing is filled.
+On 1m data, provider no-quote minutes inside the session are missing candles and
+therefore reset research windows; `--allow-data-gaps` still only controls whether
+the data audit accepts such gaps. A third policy, `LEGACY_OBSERVED_CLOSE`, exists only for the deprecated
 `strategies/backtest.py` supplied-price API.
 
 ### Data
@@ -138,15 +150,27 @@ Gross P&L, Net P&L, Total return, Total closed trades, Winning trades,
 Losing trades, Win rate, Profit factor, Max drawdown, Realized cash P&L,
 Unrealized P&L, Modeled costs, Unmodeled costs, Assumed costs,
 Remaining positions, Available funds
-— then: Execution model, Last candle end, coverage audit, research counters,
+— then: Execution model, Realized gross P&L, Unrealized gross P&L,
+  Open valuation spread, Last candle end, coverage audit, research counters,
   Estimated total costs, Modeled cash costs, remaining exposure, Rejected entries,
   Holdout overlap, Results
 ```
 
-- **Net P&L** = final equity − initial balance (open positions included).
-- **Modeled costs** = embedded spread + embedded slippage + cash commission/financing.
-- **Gross P&L** = Net P&L + Modeled costs. For flat-ending research windows this
-  is exactly the midpoint P&L (the engine asserts the reconciliation).
+Definitions (`engine.pnl_decomposition`; every report asserts the identity below to 1e-18, i.e. up to Decimal rounding):
+
+- **Gross P&L**: midpoint P&L before every cost (indicative-price P&L for data
+  without bid/ask) = **Realized gross P&L** (closed trades, entry midpoint to exit
+  midpoint) + **Unrealized gross P&L** (an open position from its entry midpoint
+  to the last closing midpoint).
+- **Modeled costs**: costs actually incurred: executed-leg spread and slippage,
+  commission and financing, including those already paid by an open position.
+- **Open valuation spread**: the exit half-spread implied by marking an open
+  position at its liquidation side (bid for longs, ask for shorts). It has not been
+  executed, so it is not a modeled cost; net equity already reflects it.
+- **Net P&L** = final equity − initial balance = Gross P&L − Modeled costs − Open
+  valuation spread = **Realized cash P&L** (balance change, including costs paid by
+  an open position) + **Unrealized P&L** (open position at the liquidation side).
+- Flat-ending runs have no open valuation spread, so Gross = Net + Modeled costs.
 - **Unmodeled costs** are named and excluded from arithmetic; they are never
   presented as zero. **Assumed costs** lists every explicit assumption (for
   example the research model's zero commission).
@@ -169,10 +193,20 @@ and `notes`.
   fingerprints the prepared study and development results; every attempt logged.
   `donchian_study` uses it with the same files and messages.
 - Holdout registry: the Donchian study's frozen holdout
-  [2026-03-27, 2026-11-01) is registered. A Donchian run with **non-preregistered
-  parameters** overlapping it is refused unless `--allow-holdout-overlap` is given
-  (and the report records the acknowledgement). Preregistered 20/10 and other
-  strategies only get a disclosure line.
+  [2026-03-27, 2026-11-01) is registered with the study's **complete**
+  preregistered holdout specifications, derived from
+  `donchian_study.configurations("holdout")`: strategy parameters, timeframe,
+  execution model and cost case, on the frozen snapshot (candle SHA256
+  `f7ad8f61…`) with size 100, USD 1,000 and leverage 1. Roles: `primary` (Donchian
+  20/10, 1H, base), `primary_cost_sensitivity` (1H high/financing), `robustness`
+  (30m and 4H, all cost cases) and `comparator` (HMA16 BUY). Cash is not a strategy.
+- Any other Donchian configuration overlapping that holdout (another timeframe,
+  execution model, cost case, data source or dataset, parameters, size, balance or
+  leverage) is refused unless `--allow-holdout-overlap` is given; the report then
+  records `acknowledged_reuse`. The specification is checked before data access
+  and the snapshot fingerprint again after it is read. Other strategies and
+  periods outside the holdout are not restricted; overlaps are always disclosed with
+  `preregistered_role` and `registered_dataset`.
 - `canonical_sha256` configuration hashes and data fingerprints in every report.
 - Cost sensitivity: `--cost-case base|high|financing`; parameter robustness: the
   study's preregistered neighbours, or explicit CLI parameters outside the holdout.
@@ -201,7 +235,15 @@ and `notes`.
    results do not.
 4. Tests that mocked `backtesting.cli.load_history` now mock
    `backtesting.runner.load_history`, where the loader is called.
-5. `reporting.make_report` (HMA-only, no remaining callers) was replaced by
+5. Review corrections (follow-up commit): Gross P&L for runs ending with an open
+   position now includes that position's midpoint move, so it rises by the open
+   valuation spread relative to the first PR #2 commit (e.g. HMA default ending
+   2026-11-12: $0.1815 → $0.1830). Gross P&L was introduced by PR #2, so no
+   released output changes. New lines/keys: Realized gross P&L, Unrealized gross
+   P&L, Open valuation spread; `summary.realized_cash_pnl`, `unrealized_pnl`,
+   `open_entry_spread_and_slippage`. Holdout disclosures add `preregistered_role`
+   and `registered_dataset`.
+6. `reporting.make_report` (HMA-only, no remaining callers) was replaced by
    `build_report`; `donchian_cli.data_help` by `study_data.snapshot_help`.
    `study_engine.active_gap` moved to `calendar.py` and is still importable from
    `study_engine`.
@@ -241,6 +283,11 @@ offline, with sockets, credential files and broker imports blocked:
   equity.csv, equity.html; Donchian trade lists and equity curves compared
   value-for-value). The unified CLI reproduces each row for the same options;
   `--strategy donchian --cost-case high` gives net −$39.6808 on the same trades.
+- **Review corrections**: the 201 study runs, the pinned fixture, the snapshot
+  coverage audit and all legacy command numbers are unchanged by the gap,
+  reversal-financing, gross P&L and holdout corrections (the study has no
+  sub-30m data and no direct reversals). Only Gross P&L of runs ending with an
+  open bid/ask position changed, by exactly the open valuation spread.
 - **Runtime** (best of 3, same machine): `donchian.py --backtest` 7.09 s → 6.81 s
   (quote rebuild computed once per candle); HMA default 0.52 s → 0.51 s.
 

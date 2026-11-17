@@ -313,6 +313,9 @@ def main(argv=None, *, now=None):
         return 1
     try:
         return _run(plan, args)
+    except HoldoutReuseError as exc:  # Only known once the snapshot fingerprint is read.
+        print(f"Backtest refused: {exc}", file=sys.stderr)
+        return 2
     except (DataError, ValueError, OSError, OverflowError, KeyError, EOFError) as exc:
         print(f"Backtest failed: {exc}", file=sys.stderr)
         if plan.data_source == "snapshot":

@@ -86,9 +86,11 @@ class RolloverLedger(Ledger):
         p.last_financing_time = stamp
 
     def target(self, direction, candle, **kwargs):
-        was_flat = self.position is None
+        # A new Position object means a genuinely new entry: from flat or a direct
+        # reversal. Holds keep the object; rejected entries leave no position.
+        before = self.position
         super().target(direction, candle, **kwargs)
-        if was_flat and self.position is not None:
+        if self.position is not None and self.position is not before:
             field = kwargs.get("field", "open")
             self.entry_mid = (candle.quote("ask", field) + candle.quote("bid", field)) / 2
 
@@ -117,7 +119,7 @@ def prepare_frames(candles, start, end):
         audits[tf] = {
             "bars": len(scored), "first_start": scored[0].timestamp if scored else None,
             "last_end": scored[-1].end if scored else None, "discarded_incomplete_aggregates": len(aggregated) - len(filtered),
-            "unexpected_gap_count": sum(active_gap(a.end, b.timestamp)
+            "unexpected_gap_count": sum(active_gap(a.end, b.timestamp, tf)
                                         for a, b in zip(scored, scored[1:])),
             "too_little_coverage": not scored or (scored[-1].end - scored[0].timestamp).days < 365 * 3 - 7,
         }

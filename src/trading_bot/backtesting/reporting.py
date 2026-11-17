@@ -37,9 +37,12 @@ def build_report(
 
     Pre-existing HMA keys and meanings are unchanged; later keys are additive.
     """
+    from .engine import pnl_decomposition
+
     ledger = result.ledger
     unmodeled = execution.unmodeled(dataset)
-    modeled = ledger.costs + ledger.embedded_slippage + ledger.embedded_spread
+    pnl = pnl_decomposition(result)
+    modeled = pnl["modeled_costs"]
     report = {
         "schema_version": 1,
         "strategy": result.strategy,
@@ -80,9 +83,16 @@ def build_report(
             "execution_policy": asdict(execution.policy),
             "assumed_costs": execution.assumed(dataset),
             "summary": {
-                "gross_pnl": stats["net_pnl"] + modeled,
+                # See engine.pnl_decomposition for the exact definitions.
+                "gross_pnl": pnl["gross_pnl"],
+                "realized_gross_pnl": pnl["realized_gross_pnl"],
+                "unrealized_gross_pnl": pnl["unrealized_gross_pnl"],
                 "net_pnl": stats["net_pnl"],
+                "realized_cash_pnl": stats["realized_pnl"],
+                "unrealized_pnl": stats["unrealized_pnl"],
                 "modeled_costs": modeled,
+                "open_entry_spread_and_slippage": pnl["open_entry_spread_and_slippage"],
+                "open_valuation_spread": pnl["open_valuation_spread"],
                 "modeled_cash_costs": ledger.costs,
                 "embedded_spread": ledger.embedded_spread,
                 "embedded_slippage": ledger.embedded_slippage,
@@ -248,6 +258,11 @@ def report_lines(report, path=None):
         ("Available funds", money(stats["available_funds"])),
         # Model- and data-specific details.
         ("Execution model", report["execution_model"]),
+    ]
+    lines += [
+        ("Realized gross P&L", money(summary["realized_gross_pnl"])),
+        ("Unrealized gross P&L", money(summary["unrealized_gross_pnl"])),
+        ("Open valuation spread", money(summary["open_valuation_spread"])),
     ]
     if summary["last_candle_end"] is not None:
         lines.append(("Last candle end", summary["last_candle_end"].isoformat()))
