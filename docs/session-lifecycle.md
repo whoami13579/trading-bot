@@ -47,7 +47,10 @@ and encryption-key requests do not extend this timer. At a cycle boundary:
    strategy work only after these checks pass.
 
 There is no automatic replay of history requests or trading mutations. A 401 received
-outside the cycle probe still stops the client. This deliberately confines recovery to
+outside the cycle probe still stops the client. Transient *network* failures, as distinct
+from HTTP 401 expiry, are covered in [network recovery](network-recovery.md). HMA retries
+read-only GETs a bounded number of times and may pause and resume with a fresh,
+re-verified DEMO client. The stopped client described here is never revived. This deliberately confines recovery to
 an operation with no execution outcome to reconcile. Failed renewal clears the tokens
 and disarms execution. Interrupted requests also invalidate the client and propagate the
 interrupt; catching the interrupt cannot make a subsequent cycle resubmit an order.

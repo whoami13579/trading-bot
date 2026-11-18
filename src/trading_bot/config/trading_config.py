@@ -98,6 +98,63 @@ def add_trading_arguments(parser):
                         help="Optional existing verified evidence for fees absent from the broker API")
 
 
+def add_network_arguments(parser):
+    """Read retry, outage recovery and stale-cycle controls for scheduled strategies."""
+    group = parser.add_argument_group(
+        "network recovery",
+        "Read-only GET retries and DEMO pause/resume. Trade-changing requests are never retried.",
+    )
+    group.add_argument("--network-retries", type=_bounded(int, 0, 10), default=defaults.NETWORK_RETRIES,
+                       help="Retries per read-only request after the first attempt; 0 disables (default: %(default)s)")
+    group.add_argument("--network-retry-delay", type=_bounded(float, 0, 600), default=defaults.NETWORK_RETRY_DELAY,
+                       help="Seconds before the first retry, doubling per retry (default: %(default)s)")
+    group.add_argument("--network-retry-max-delay", type=_bounded(float, 0, 600),
+                       default=defaults.NETWORK_RETRY_MAX_DELAY,
+                       help="Maximum seconds for one retry delay (default: %(default)s)")
+    group.add_argument("--network-retry-jitter", type=_bounded(float, 0, 0.99),
+                       default=defaults.NETWORK_RETRY_JITTER,
+                       help="Random +/- fraction applied to each delay (default: %(default)s)")
+    group.add_argument("--recovery-interval", type=_bounded(float, 1, 3600), default=defaults.RECOVERY_INTERVAL,
+                       help="Seconds between connectivity checks while paused (default: %(default)s)")
+    group.add_argument("--max-outage", type=_bounded(float, 0, 30 * 86400), default=defaults.MAX_OUTAGE,
+                       help="Stop after this many paused seconds; 0 waits indefinitely (default: %(default)s)")
+    group.add_argument("--max-signal-delay", type=_bounded(float, 1, 86400), default=defaults.MAX_SIGNAL_DELAY,
+                       help="Skip a cycle started more than this many seconds after its boundary "
+                            "(default: %(default)s)")
+    group.add_argument("--no-network-recovery", dest="network_recovery", action="store_false",
+                       help="Stop on a network outage instead of pausing and resuming")
+
+
+def network_policies(args):
+    """Build validated retry and recovery policies from add_network_arguments values."""
+    from trading_bot.api.retry import RetryPolicy
+    from trading_bot.utils.network_recovery import RecoveryPolicy
+
+    try:
+        retry = RetryPolicy(max_retries=args.network_retries, base_delay=args.network_retry_delay,
+                            max_delay=args.network_retry_max_delay, jitter=args.network_retry_jitter)
+        recovery = RecoveryPolicy(enabled=args.network_recovery, interval=args.recovery_interval,
+                                  max_outage=args.max_outage)
+    except ValueError as exc:
+        raise ConfigurationError(str(exc)) from None
+    return retry, recovery
+
+
+def _bounded(kind, minimum, maximum):
+    import argparse
+    import math
+
+    def parse(value):
+        try:
+            number = kind(value)
+        except (TypeError, ValueError):
+            raise argparse.ArgumentTypeError(f"expected a number between {minimum} and {maximum}") from None
+        if not math.isfinite(number) or not minimum <= number <= maximum:
+            raise argparse.ArgumentTypeError(f"expected a number between {minimum} and {maximum}")
+        return number
+    return parse
+
+
 def positive_size(value):
     import argparse
     import math

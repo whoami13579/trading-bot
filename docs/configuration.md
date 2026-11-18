@@ -63,6 +63,15 @@ contract support remains **EURUSD, size 100, USD accounts**; other `--symbol` an
 execution. The CLI never changes an unsupported size or instrument silently.
 
 
+### Network retry and recovery (HMA)
+
+`hma.py` accepts `--network-retries` (default 3), `--network-retry-delay` (2s),
+`--network-retry-max-delay` (30s), `--network-retry-jitter` (0.2),
+`--recovery-interval` (60s), `--max-outage` (0 = unlimited), `--max-signal-delay`
+(120s) and `--no-network-recovery`. The defaults live in
+`src/trading_bot/config/strategy_defaults.py`. Retries apply to read-only GETs only.
+See [network recovery](network-recovery.md) for the full behavior.
+
 ## Package paths
 
 Shared configuration lives in `src/trading_bot/config/trading_config.py`; editable

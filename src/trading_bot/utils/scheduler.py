@@ -1,5 +1,5 @@
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections.abc import Callable
 
 SCHEDULE_TIMEFRAMES = ("MINUTE", "MINUTE_5", "MINUTE_15", "MINUTE_30")
@@ -8,7 +8,12 @@ SCHEDULE_TIMEFRAMES = ("MINUTE", "MINUTE_5", "MINUTE_15", "MINUTE_30")
 def wait_until_targets(
     target_minutes, *, keepalive: Callable[[], object] | None = None
 ):
-    """Wait for the candle boundary; optionally validate a session every five minutes."""
+    """Wait for the next candle boundary and return it as an aware UTC datetime.
+
+    Only future boundaries are scheduled, so boundaries missed while the caller was
+    paused are skipped rather than replayed. Optionally validate a session every
+    five minutes during the wait.
+    """
     if (
         not isinstance(target_minutes, (list, tuple))
         or not target_minutes
@@ -44,14 +49,23 @@ def wait_until_targets(
         f"Next run at:  {target_time.strftime('%H:%M:%S')} (In {round(delay, 2)} seconds)"
     )
 
+    boundary = target_time.astimezone(timezone.utc)
     if keepalive is None:
         time.sleep(delay)
-        return
+        return boundary
     deadline = time.monotonic() + delay
     while (remaining := deadline - time.monotonic()) > 0:
         time.sleep(min(remaining, 300))
         if time.monotonic() < deadline:
-            keepalive()  # Read-only session/account validation; failures propagate and stop.
+            keepalive()  # Read-only session/account validation; failures propagate to the caller.
+    return boundary
+
+
+def schedule_interval_seconds(target_minutes) -> int:
+    """Seconds between consecutive boundaries of an evenly spaced minute schedule."""
+    if len(target_minutes) < 2:
+        return 3600
+    return (target_minutes[1] - target_minutes[0]) * 60
 
 
 def timeframe_to_minutes(timeframe: str) -> list[int]:

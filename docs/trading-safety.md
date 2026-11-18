@@ -88,7 +88,14 @@ positions in a previous journal block restart until manually reconciled with the
 actual account. Never clear unresolved state simply to retry an order. Session or
 account changes invalidate the gate and require a new automated preflight.
 
-Ctrl+C stops the process without liquidating positions. Broker stops remain in
+Network outages: the HMA strategy retries read-only GETs with bounded backoff, and in
+DEMO pauses and resumes after re-authentication and broker reconciliation. Trade-changing
+requests are never retried. An uncertain order outcome stops the bot for manual
+reconciliation, and LIVE never resumes automatically. See
+[network recovery](network-recovery.md).
+
+Ctrl+C stops the process without liquidating positions. In HMA, Ctrl+C or SIGTERM during
+an order request is deferred until that request returns. Broker stops remain in
 place; review remaining exposure on Capital.com. Prices can slip or gap and fees
 or holding costs can exceed estimates. Entry-time risk limits do not guarantee a
 maximum loss or run a background liquidation service. A broker stop that closes a

@@ -1,8 +1,18 @@
-from trading_bot.config.trading_config import add_trading_arguments, create_trading_api
+from trading_bot.config.trading_config import (
+    add_network_arguments,
+    add_trading_arguments,
+    create_trading_api,
+    network_policies,
+)
 from trading_bot.strategies.indicators import calculate_hma_result
 from trading_bot.utils.colors import colors
 import argparse
-from trading_bot.utils.scheduler import SCHEDULE_TIMEFRAMES, wait_until_targets, timeframe_to_minutes
+from trading_bot.utils.scheduler import (
+    SCHEDULE_TIMEFRAMES,
+    schedule_interval_seconds,
+    timeframe_to_minutes,
+    wait_until_targets,
+)
 
 # --- Configuration ---
 DEFAULT_SYMBOL: str = "EURUSD"
@@ -28,6 +38,7 @@ def main() -> None:
     parser.add_argument("--cycles", type=int, help="Stop after this many scheduled cycles")
     parser.add_argument("--days", type=int)
     parser.add_argument("--direction", type=str)
+    add_network_arguments(parser)
 
     args = parser.parse_args()
     if args.backtest:
@@ -44,6 +55,9 @@ def main() -> None:
         parser.error("--cycles must be positive")
     if args.read_only and args.real:
         parser.error("HMA read-only diagnostics require DEMO; omit --REAL/--real")
+    if args.network_retry_max_delay < args.network_retry_delay:
+        parser.error("--network-retry-max-delay must be at least --network-retry-delay")
+    retry_policy, recovery_policy = network_policies(args)
     QUANTITY = args.size
     SYMBOL = args.symbol
 
@@ -67,19 +81,69 @@ def main() -> None:
     else:
         DIRECTION: str = DEFAULT_DIRECTION
 
-    # 1. Environment & Auth
-    if args.read_only:
-        tradingApi = create_trading_api(args, symbol=SYMBOL, size=QUANTITY, order_execution=False)
-    else:
-        tradingApi = create_trading_api(args, symbol=SYMBOL, size=QUANTITY)
+    # Online-only imports: --backtest must never load broker modules.
+    from trading_bot.utils.network_recovery import (
+        CycleGuard,
+        GracefulShutdown,
+        NetworkSupervisor,
+        ShutdownRequested,
+        configure_runtime_logging,
+    )
 
+    configure_runtime_logging()
+    shutdown = GracefulShutdown()
+    supervisor = NetworkSupervisor(
+        recovery_policy,
+        environment="live" if args.real else "demo",
+        symbol=SYMBOL,
+        shutdown=shutdown,
+    )
     TIMES = timeframe_to_minutes(args.schedule_time_frame or TIMEFRAME)
+    guard = CycleGuard(schedule_interval_seconds(TIMES), args.max_signal_delay)
 
+    current = {"api": None}  # The client in use, including after a recovery.
+    try:
+        with shutdown:
+            # 1. Environment & Auth: a transient DEMO startup outage waits before any trade.
+            if args.read_only:
+                tradingApi = supervisor.start(lambda: create_trading_api(
+                    args, symbol=SYMBOL, size=QUANTITY, order_execution=False))
+            else:
+                tradingApi = supervisor.start(lambda: create_trading_api(
+                    args, symbol=SYMBOL, size=QUANTITY))
+            current["api"] = tradingApi
+            tradingApi.configure_read_retries(retry_policy)
+            _run_cycles(args, current, supervisor, guard, shutdown, TIMES,
+                        SYMBOL, TIMEFRAME, HMA_PERIOD, QUANTITY, DAYS, DIRECTION)
+    except ShutdownRequested as stop:
+        _report_shutdown(current["api"])
+        raise SystemExit(stop.exit_code) from None
+    except KeyboardInterrupt:
+        _report_shutdown(current["api"])
+        raise SystemExit(130) from None
+
+
+def _report_shutdown(api):
+    import logging
+
+    uncertain = getattr(api, "_mutation_outcome_uncertain", False) is True
+    logging.getLogger("trading_bot.strategies.hma").warning(
+        "Shutdown complete: no further signals or orders. Open positions are not closed%s",
+        "; an order request was interrupted and its outcome is uncertain: reconcile on "
+        "Capital.com before restarting" if uncertain else "",
+    )
+
+
+def _run_cycles(args, current, supervisor, guard, shutdown, TIMES,
+                SYMBOL, TIMEFRAME, HMA_PERIOD, QUANTITY, DAYS, DIRECTION):
+    from trading_bot.api.network_errors import TradingUnavailable
+
+    tradingApi = current["api"]
     # 3. Execution Loop
     completed_cycles = 0
     while args.cycles is None or completed_cycles < args.cycles:
         try:
-            wait_until_targets(TIMES, keepalive=tradingApi.prepare_trading_cycle)
+            boundary = wait_until_targets(TIMES, keepalive=tradingApi.prepare_trading_cycle)
             completed_cycles += 1
 
             if DAYS == 7:
@@ -88,6 +152,9 @@ def main() -> None:
                 if not tradingApi.is_market_open():
                     tradingApi.wait_until_open()
 
+            # Each boundary runs at most once, and never after it has become stale.
+            if not guard.start(boundary):
+                continue
             renewed = tradingApi.prepare_trading_cycle()
             if args.read_only:
                 history, code = tradingApi.getHistoricalPrices(SYMBOL, TIMEFRAME, HMA_PERIOD * 3)
@@ -95,14 +162,19 @@ def main() -> None:
                       f"{len(history['prices'])} prices; session {'renewed' if renewed else 'validated'}")
                 continue
 
+            if not guard.fresh("signal"):
+                continue
             hma_result = calculate_hma_result(tradingApi, SYMBOL, TIMEFRAME, HMA_PERIOD)
 
             if hma_result != DIRECTION:
                 all_positions = tradingApi.getAllPositionsList()
                 targets = [pos for pos in all_positions if pos.epic == SYMBOL]
                 if 0 < len(targets):
+                    if not guard.fresh("order"):
+                        continue
                     for target in targets:
-                        result, code = tradingApi.closePosition(target.dealId)
+                        with shutdown.order_request():
+                            result, code = tradingApi.closePosition(target.dealId)
                         if code != 200:
                             print(f"failed to close position ({result})")
 
@@ -114,7 +186,10 @@ def main() -> None:
                 all_positions = tradingApi.getAllPositionsList()
                 targets = [pos for pos in all_positions if pos.epic == SYMBOL]
                 if len(targets) == 0:
-                    result, code = tradingApi.createPosition(SYMBOL, hma_result, QUANTITY)
+                    if not guard.fresh("order"):
+                        continue
+                    with shutdown.order_request():
+                        result, code = tradingApi.createPosition(SYMBOL, hma_result, QUANTITY)
 
                     if code == 200:
                         color = colors.BLUE if hma_result == "BUY" else colors.RED
@@ -122,6 +197,10 @@ def main() -> None:
                     else:
                         print(f"failed to create {hma_result} position ({result})")
 
+        except TradingUnavailable as unavailable:
+            # Pauses and returns a verified replacement client, or re-raises to stop:
+            # uncertain orders, authentication/identity failures and LIVE never resume.
+            tradingApi = current["api"] = supervisor.recover(unavailable, tradingApi)
         except Exception as e:
             if args.read_only:
                 raise SystemExit("DEMO read-only cycle failed; no order was submitted.") from None

@@ -10,6 +10,7 @@ from trading_bot.api.network_errors import (
     endpoint_template,
     network_failure_reason,
 )
+from trading_bot.api.retry import RETRYABLE_READ_STATUSES, RetryPolicy, is_transient
 from urllib.parse import urlsplit
 
 from trading_bot.api.rest import RestComponent
@@ -21,6 +22,11 @@ from trading_bot.api.watchlists import WatchlistsAPI
 from trading_bot.api.working_orders import WorkingOrdersAPI
 
 _LOGGER = logging.getLogger(__name__)
+_HTTP_METHODS = frozenset({"get", "post", "put", "delete", "patch", "head", "options"})
+
+
+def _method_label(method):
+    return method.upper() if method.lower() in _HTTP_METHODS else "UNKNOWN"
 
 
 class TradingApi(
@@ -66,6 +72,7 @@ class TradingApi(
         self._cycle_identity: tuple[str, str, str] | None = None
         self._preparing_cycle = False
         self._last_cycle_ping: dict | None = None
+        self._read_retry_policy = None  # Opt-in; GET requests only.
         supplied = (x_cap_api_key, identifier, password)
         if all(value is None for value in supplied):
             values = load_credentials()
@@ -116,6 +123,41 @@ class TradingApi(
                 self._unavailable, mutation=self._mutation_outcome_uncertain
             ) from None
 
+    def configure_read_retries(self, policy: RetryPolicy | None) -> None:
+        """Enable bounded retries for read-only GETs; ``None`` restores single attempts.
+
+        This never affects login, logout or trade-changing requests.
+        """
+        if policy is not None and not isinstance(policy, RetryPolicy):
+            raise TypeError("retry_policy_required")
+        self._read_retry_policy = policy
+
+    def _wait_for_read_retry(self, policy, retries, reason, method, path):
+        """Sleep before another GET attempt; False when the request must stop now."""
+        if policy is None or method.lower() != "get" or not is_transient(reason):
+            return False
+        labels = (self.environment.upper(), _method_label(method), endpoint_template(path))
+        if retries >= policy.max_retries:
+            if policy.max_retries:
+                _LOGGER.error(
+                    "API read retries exhausted environment=%s method=%s endpoint=%s "
+                    "exception_category=%s attempts=%d",
+                    *labels, reason, retries + 1,
+                )
+            return False
+        delay = policy.delay(retries + 1)
+        _LOGGER.warning(
+            "API read retry scheduled environment=%s method=%s endpoint=%s "
+            "exception_category=%s retry=%d max_retries=%d delay_seconds=%.2f",
+            *labels, reason, retries + 1, policy.max_retries, delay,
+        )
+        try:
+            policy.wait(delay)
+        except KeyboardInterrupt:
+            self._invalidate_session("request_interrupted")
+            raise
+        return True
+
     def _request(self, method, url, **kwargs):
         self._require_available()
         path = urlsplit(url).path
@@ -147,37 +189,50 @@ class TradingApi(
                 raise PermissionError("live_mutation_outside_execution_gate")
         from trading_bot.api.rate_limits import throttle
 
-        throttle(
-            self.X_CAP_API_KEY,
-            self.environment,
-            method.lower(),
-            path,
-            self._login_account_id,
-            user_identifier=self.IDENTIFIER,
-        )
         kwargs.update(timeout=REQUEST_TIMEOUT, allow_redirects=False, verify=True)
-        request_started = time.monotonic()
-        try:
-            res = getattr(requests, method)(url, **kwargs)
-        except KeyboardInterrupt:
-            self._mutation_outcome_uncertain |= mutation
-            self._invalidate_session("request_interrupted")
-            raise
-        except (requests.exceptions.RequestException, OSError) as exc:
-            reason = network_failure_reason(exc)
-            _LOGGER.warning(
-                "API transport failure timestamp=%s environment=%s method=%s "
-                "endpoint=%s elapsed_seconds=%.3f exception_category=%s",
-                datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
-                self.environment.upper(),
-                method.upper() if method.lower() in {
-                    "get", "post", "put", "delete", "patch", "head", "options"
-                } else "UNKNOWN",
-                endpoint_template(path),
-                time.monotonic() - request_started,
-                reason,
+        # Only a read-only GET may be retried. Login, logout and every trade-changing
+        # request are sent once: an unknown mutation outcome is never resubmitted.
+        policy = self._read_retry_policy if method.lower() == "get" else None
+        retries = 0
+        while True:
+            throttle(
+                self.X_CAP_API_KEY,
+                self.environment,
+                method.lower(),
+                path,
+                self._login_account_id,
+                user_identifier=self.IDENTIFIER,
             )
-            self._stop(reason, mutation=mutation)
+            request_started = time.monotonic()
+            try:
+                res = getattr(requests, method)(url, **kwargs)
+            except KeyboardInterrupt:
+                self._mutation_outcome_uncertain |= mutation
+                self._invalidate_session("request_interrupted")
+                raise
+            except (requests.exceptions.RequestException, OSError) as exc:
+                reason = network_failure_reason(exc)
+                _LOGGER.warning(
+                    "API transport failure timestamp=%s environment=%s method=%s "
+                    "endpoint=%s elapsed_seconds=%.3f exception_category=%s",
+                    datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+                    self.environment.upper(),
+                    _method_label(method),
+                    endpoint_template(path),
+                    time.monotonic() - request_started,
+                    reason,
+                )
+                if self._wait_for_read_retry(policy, retries, reason, method, path):
+                    retries += 1
+                    continue
+                self._stop(reason, mutation=mutation)
+            if policy is not None and res.status_code in RETRYABLE_READ_STATUSES:
+                if self._wait_for_read_retry(
+                    policy, retries, f"http_{res.status_code}", method, path
+                ):
+                    retries += 1
+                    continue
+            break
         from trading_bot.api.errors import broker_error_code
 
         error_code = broker_error_code(res) if res.status_code >= 300 else None
