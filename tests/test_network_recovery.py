@@ -21,6 +21,7 @@ import requests
 from urllib3.exceptions import MaxRetryError, NameResolutionError, ProtocolError
 
 from trading_bot.api.client import TradingApi
+from trading_bot.backtesting.timeframes import MINUTES
 from trading_bot.api.network_errors import TradingUnavailable
 from trading_bot.api.retry import RetryPolicy, TRANSIENT_REASONS, is_transient
 from trading_bot.config.trading_config import DEMO_URL
@@ -30,10 +31,12 @@ from trading_bot.utils.network_recovery import (
     CycleGuard,
     GracefulShutdown,
     NetworkSupervisor,
+    PendingOrders,
     RecoveryPolicy,
     ShutdownRequested,
     reconcile_broker_state,
 )
+from trading_bot.utils.candles import completed_closes
 
 CREDENTIALS = {
     "X-CAP-API-KEY": "fixture-key-private",
@@ -89,8 +92,19 @@ class FakeClock:
         return self.local().astimezone(timezone.utc)
 
 
+def floor_utc(moment, step):
+    seconds = int(step.total_seconds())
+    return datetime.fromtimestamp(int(moment.timestamp()) // seconds * seconds, timezone.utc)
+
+
 class Broker:
-    """Stateful DEMO broker: sessions, prices, positions, working orders and outages."""
+    """Stateful DEMO broker: sessions, prices, positions, working orders and outages.
+
+    Candles carry Capital's ``snapshotTimeUTC`` interval starts; the last one is still
+    forming. Every open and close returns a deal reference whose confirmation is served
+    by ``/confirms``. With ``lag`` set, the position list does not yet reflect new opens
+    or closes and confirmations are not yet published, until ``release_at``.
+    """
 
     def __init__(self, clock):
         self.clock = clock
@@ -105,6 +119,29 @@ class Broker:
         self.generation = 0
         self.orders = 0
         self.trend = 1  # Rising closes give a BUY HMA signal.
+        self.candle_lag = timedelta(0)  # How far the broker's latest candle trails real time.
+        self.candle_hook = None  # Optional rewrite of the served candle rows.
+        self.confirmations = {}
+        self.confirm_status = "ACCEPTED"
+        self.lag = False  # Acknowledged orders not yet confirmed or listed.
+        self.release_at = None
+        self.unlisted, self.still_listed = set(), []
+        self.request_hook = None  # Called with (method, path) before a request is served.
+
+    def release(self):
+        self.lag = False
+        self.unlisted.clear()
+        self.still_listed.clear()
+
+    def listed_positions(self):
+        return [p for p in self.positions if p["position"]["dealId"] not in self.unlisted] + self.still_listed
+
+    def candles(self, resolution, count):
+        step = timedelta(minutes=MINUTES[resolution])
+        forming = floor_utc(self.clock.utc() - self.candle_lag, step)
+        rows = [{"snapshotTimeUTC": (forming - (count - 1 - i) * step).replace(tzinfo=None).isoformat(),
+                 "closePrice": {"ask": 1.1 + self.trend * i / 10000}} for i in range(count)]
+        return self.candle_hook(rows) if self.candle_hook else rows
 
     @property
     def tokens(self):
@@ -123,8 +160,13 @@ class Broker:
         assert url.startswith(DEMO_URL + "/api/v1/"), "only the DEMO host is allowed"
         now = self.clock.local()
         self.calls.append((method, path, now))
+        if self.request_hook is not None:
+            self.request_hook(method, path)
+            now = self.clock.local()
         if any(start <= now < end for start, end in self.outages):
             raise dns_error()
+        if self.release_at is not None and now >= self.release_at:
+            self.release()
         queued = self.failures[(method, path)]
         if queued:
             outcome = queued.popleft()
@@ -156,25 +198,45 @@ class Broker:
                 "accountType": "CFD", "status": "ENABLED",
             }]})
         if method == "get" and path == "/api/v1/prices/EURUSD":
-            count = kwargs.get("params", {}).get("max", 48)
-            return self.response(value={"prices": [
-                {"closePrice": {"ask": 1.1 + self.trend * i / 10000}} for i in range(count)
-            ]})
+            params = kwargs.get("params", {})
+            rows = self.candles(params.get("resolution", "MINUTE_30"), params.get("max", 48))
+            return self.response(value={"prices": rows})
         if method == "get" and path == "/api/v1/positions":
-            return self.response(value={"positions": self.positions})
+            return self.response(value={"positions": self.listed_positions()})
+        if method == "get" and path.startswith("/api/v1/confirms/"):
+            confirmation = self.confirmations.get(path.rsplit("/", 1)[1])
+            if confirmation is None or self.lag:
+                return self.response(404, {"errorCode": "error.not-found.dealReference"})
+            return self.response(value={**confirmation, "dealStatus": self.confirm_status})
         if method == "post" and path == "/api/v1/positions":
             self.orders += 1
             payload = kwargs["json"]
+            deal_id, reference = f"fixture-deal-private-{self.orders}", f"o_private-marker-{self.orders}"
             self.positions.append({
                 "market": {"epic": payload["epic"]},
-                "position": {"dealId": f"fixture-deal-private-{self.orders}",
-                             "direction": payload["direction"], "size": payload["size"]},
+                "position": {"dealId": deal_id, "direction": payload["direction"], "size": payload["size"]},
             })
-            return self.response(value={"dealReference": "o_private-marker"})
+            if self.lag:
+                self.unlisted.add(deal_id)
+            self.confirmations[reference] = {
+                "dealReference": reference, "epic": payload["epic"], "direction": payload["direction"],
+                "size": payload["size"], "status": "OPEN",
+                "affectedDeals": [{"dealId": deal_id, "status": "OPENED"}],
+            }
+            return self.response(value={"dealReference": reference})
         if method == "delete" and path.startswith("/api/v1/positions/"):
             deal_id = path.rsplit("/", 1)[1]
+            self.orders += 1
+            reference = f"p_private-marker-{self.orders}"
+            closed = [p for p in self.positions if p["position"]["dealId"] == deal_id]
             self.positions = [p for p in self.positions if p["position"]["dealId"] != deal_id]
-            return self.response(value={"dealReference": "p_private-marker"})
+            if self.lag:
+                self.still_listed.extend(closed)
+            self.confirmations[reference] = {
+                "dealReference": reference, "epic": "EURUSD", "status": "CLOSED",
+                "affectedDeals": [{"dealId": deal_id, "status": "FULLY_CLOSED"}],
+            }
+            return self.response(value={"dealReference": reference})
         if method == "get" and path == "/api/v1/workingorders":
             return self.response(value={"workingOrders": self.working})
         raise AssertionError("unexpected fixture route")
@@ -685,7 +747,48 @@ class SupervisorTests(unittest.TestCase):
             supervisor.recover(original, api)
         self.assertIs(raised.exception, original)
         self.assertEqual(sum(self.sleeps), 300)
-        self.assertTrue(any("exceeding max_outage_seconds=300" in line for line in logs.output))
+        self.assertTrue(any("reaching max_outage_seconds=300" in line for line in logs.output))
+
+    def test_max_outage_shorter_than_the_interval_never_starts_a_probe(self):
+        supervisor = self.supervisor(interval=60, max_outage=5)
+        api = Mock(_mutation_outcome_uncertain=False)
+        original = TradingUnavailable("dns_resolution_failed")
+        with self.assertLogs("trading_bot", level="INFO") as logs, self.assertRaises(TradingUnavailable) as raised:
+            supervisor.recover(original, api)
+        self.assertIs(raised.exception, original)
+        self.assertEqual(self.sleeps, [5.0])  # Sleeps only to the deadline, then stops.
+        api.recovered_client.assert_not_called()  # No probe at or after the deadline.
+        self.assertIn("trading is not resumed", "\n".join(logs.output))
+        factory = Mock(side_effect=TradingUnavailable("dns_resolution_failed"))
+        with self.assertLogs("trading_bot", level="INFO"), self.assertRaises(TradingUnavailable):
+            supervisor.start(factory)
+        factory.assert_called_once()  # Startup: the initial attempt only.
+
+    def test_recovery_returning_at_or_after_the_deadline_is_not_resumed(self):
+        for duration, succeeds in ((40.0, True), (50.0, True), (50.0, False)):
+            with self.subTest(duration=duration, succeeds=succeeds):
+                supervisor = self.supervisor(interval=60, max_outage=100)
+                api, fresh = Mock(_mutation_outcome_uncertain=False), Mock()
+
+                def slow_attempt(_duration=duration, _succeeds=succeeds):
+                    self.now[0] += _duration  # Starts at 60 s, before the 100 s deadline.
+                    if not _succeeds:
+                        raise TradingUnavailable("connection_timeout")
+                    return fresh
+
+                api.recovered_client.side_effect = slow_attempt
+                original = TradingUnavailable("dns_resolution_failed")
+                with self.assertLogs("trading_bot", level="INFO") as logs, \
+                        self.assertRaises(TradingUnavailable) as raised:
+                    supervisor.recover(original, api)
+                self.assertIs(raised.exception, original)
+                self.assertEqual(api.recovered_client.call_count, 1)  # No probe after the deadline.
+                self.assertEqual(self.sleeps, [60.0])
+                text = "\n".join(logs.output)
+                self.assertIn("reaching max_outage_seconds=100; trading is not resumed", text)
+                self.assertNotIn("Scheduled trading resumed", text)
+                self.assertNotIn("Connectivity recovered", text)
+                fresh.createPosition.assert_not_called()
 
     def test_authentication_failure_after_connectivity_returns_stops_recovery(self):
         supervisor = self.supervisor()
@@ -737,6 +840,185 @@ class SupervisorTests(unittest.TestCase):
         with self.assertLogs("trading_bot", level="ERROR"), self.assertRaises(TradingUnavailable):
             supervisor.start(factory)
         factory.assert_called_once()
+
+
+OPEN_CONFIRMATION = {
+    "dealReference": "o_reference", "dealStatus": "ACCEPTED", "epic": "EURUSD", "direction": "BUY",
+    "size": 100.0, "affectedDeals": [{"dealId": "deal-1", "status": "OPENED"}],
+}
+LISTED = {"market": {"epic": "EURUSD"}, "position": {"dealId": "deal-1"}}
+
+
+class PendingOrderTests(unittest.TestCase):
+    def api(self, confirmations, positions=()):
+        api = Mock()
+        api.getPositionOrderConfirmation.side_effect = list(confirmations)
+        api.getAllPositions.return_value = ({"positions": list(positions)}, 200)
+        return api
+
+    def tracker(self, now=None, **kwargs):
+        self.now = now if now is not None else [0.0]
+        self.sleeps = []
+        return PendingOrders("EURUSD", monotonic=lambda: self.now[0], sleep=self.sleeps.append, **kwargs)
+
+    def test_open_resolves_only_when_confirmed_and_listed_using_reads_only(self):
+        pending = self.tracker()
+        with self.assertLogs("trading_bot", level="INFO"):
+            pending.record_open({"dealReference": "o_reference"}, direction="BUY", size=100)
+        api = self.api([None, dict(OPEN_CONFIRMATION, dealStatus="PENDING"), OPEN_CONFIRMATION,
+                        OPEN_CONFIRMATION], positions=[])
+        with self.assertLogs("trading_bot", level="WARNING"):
+            self.assertFalse(pending.resolve(api))  # 404: not yet published.
+            self.assertFalse(pending.resolve(api))  # PENDING.
+            self.assertFalse(pending.resolve(api))  # Accepted, but positions do not show it yet.
+        api.getAllPositions.return_value = ({"positions": [LISTED]}, 200)
+        with self.assertLogs("trading_bot", level="INFO"):
+            self.assertTrue(pending.resolve(api))
+        self.assertEqual(len(pending), 0)
+        api.getPositionOrderConfirmation.assert_called_with("o_reference")
+        for mutation in ("createPosition", "closePosition", "updatePosition", "createWorkingOrder"):
+            getattr(api, mutation).assert_not_called()
+
+    def test_close_resolves_once_the_position_is_gone(self):
+        pending = self.tracker()
+        with self.assertLogs("trading_bot", level="INFO"):
+            pending.record_close({"dealReference": "p_reference"}, deal_id="deal-1")
+        close = {"dealReference": "p_reference", "dealStatus": "ACCEPTED"}
+        api = self.api([close, close], positions=[LISTED])
+        with self.assertLogs("trading_bot", level="WARNING"):
+            self.assertFalse(pending.resolve(api))
+        api.getAllPositions.return_value = ({"positions": []}, 200)
+        with self.assertLogs("trading_bot", level="INFO"):
+            self.assertTrue(pending.resolve(api))
+
+    def test_rejected_malformed_or_mismatched_confirmations_stop_for_manual_reconciliation(self):
+        cases = {
+            "rejected": dict(OPEN_CONFIRMATION, dealStatus="REJECTED"),
+            "other_reference": dict(OPEN_CONFIRMATION, dealReference="o_other"),
+            "direction": dict(OPEN_CONFIRMATION, direction="SELL"),
+            "size": dict(OPEN_CONFIRMATION, size=50),
+            "epic": dict(OPEN_CONFIRMATION, epic="GBPUSD"),
+            "two_deals": dict(OPEN_CONFIRMATION, affectedDeals=[{"dealId": "a", "status": "OPENED"}] * 2),
+            "not_opened": dict(OPEN_CONFIRMATION, affectedDeals=[{"dealId": "deal-1", "status": "DELETED"}]),
+            "not_a_dict": ["private-marker"],
+        }
+        for name, confirmation in cases.items():
+            with self.subTest(case=name):
+                pending = self.tracker()
+                with self.assertLogs("trading_bot", level="INFO"):
+                    pending.record_open({"dealReference": "o_reference"}, direction="BUY", size=100)
+                with self.assertLogs("trading_bot", level="CRITICAL") as logs, \
+                        self.assertRaises(TradingUnavailable) as stopped:
+                    pending.resolve(self.api([confirmation], positions=[LISTED]))
+                self.assertEqual(stopped.exception.reason, "order_confirmation_mismatch")
+                self.assertTrue(stopped.exception.outcome_uncertain)
+                self.assertEqual(len(pending), 1)  # Still unresolved: never forgotten.
+                assert_redacted(self, *logs.output)
+                self.assertNotIn("o_reference", "\n".join(logs.output))
+
+    def test_acknowledgement_without_a_reference_cannot_be_confirmed_and_stops(self):
+        for result in ({}, {"dealReference": ""}, {"dealReference": "../x"}, None):
+            with self.subTest(result=result):
+                pending = self.tracker()
+                with self.assertLogs("trading_bot", level="INFO"):
+                    pending.record_open(result, direction="BUY", size=100)
+                api = self.api([])
+                with self.assertLogs("trading_bot", level="CRITICAL"), self.assertRaises(TradingUnavailable) as stopped:
+                    pending.resolve(api)
+                self.assertEqual(stopped.exception.reason, "order_confirmation_mismatch")
+                api.getPositionOrderConfirmation.assert_not_called()
+
+    def test_unresolved_order_blocks_until_the_timeout_then_stops(self):
+        pending = self.tracker(timeout=300)
+        with self.assertLogs("trading_bot", level="INFO"):
+            pending.record_open({"dealReference": "o_reference"}, direction="BUY", size=100)
+        api = self.api([None] * 3)
+        with self.assertLogs("trading_bot", level="WARNING") as logs:
+            self.assertFalse(pending.resolve(api))
+            self.now[0] = 299.0
+            self.assertFalse(pending.resolve(api))
+        self.assertEqual(sum("reason=order_confirmation_pending" in line for line in logs.output), 2)
+        self.now[0] = 300.0
+        with self.assertLogs("trading_bot", level="CRITICAL"), self.assertRaises(TradingUnavailable) as stopped:
+            pending.resolve(api)
+        self.assertEqual(stopped.exception.reason, "order_confirmation_unresolved")
+        self.assertTrue(stopped.exception.outcome_uncertain)
+
+    def test_polling_waits_between_confirmation_reads(self):
+        pending = self.tracker()
+        with self.assertLogs("trading_bot", level="INFO"):
+            pending.record_open({"dealReference": "o_reference"}, direction="BUY", size=100)
+        api = self.api([None, None, OPEN_CONFIRMATION], positions=[LISTED])
+        with self.assertLogs("trading_bot", level="INFO"):
+            self.assertTrue(pending.resolve(api, attempts=3))
+        self.assertEqual(self.sleeps, [1.0, 1.0])
+
+    def test_live_tracker_is_disabled_because_the_live_gate_confirms_synchronously(self):
+        pending = self.tracker(enabled=False)
+        pending.record_open({"dealReference": "o_reference"}, direction="BUY", size=100)
+        api = Mock()
+        self.assertTrue(pending.resolve(api))
+        self.assertEqual(api.mock_calls, [])
+
+
+UTC_BOUNDARY = datetime(2026, 11, 17, 22, 0, tzinfo=timezone.utc)
+
+
+def candle_rows(*starts):
+    return {"prices": [{"snapshotTimeUTC": start.replace(tzinfo=None).isoformat(),
+                        "snapshotTime": "private-marker-local-time",
+                        "closePrice": {"ask": float(index)}} for index, start in enumerate(starts)]}
+
+
+class CompletedCandleTests(unittest.TestCase):
+    def at(self, hour, minute, day=17):
+        return datetime(2026, 11, day, hour, minute, tzinfo=timezone.utc)
+
+    def test_latest_completed_candle_is_required_and_the_forming_one_is_discarded(self):
+        payload = candle_rows(self.at(21, 0), self.at(21, 30), self.at(22, 0))
+        self.assertEqual(completed_closes(payload, "MINUTE_30", UTC_BOUNDARY), [0.0, 1.0])
+
+    def test_stale_or_gapped_history_skips_the_cycle(self):
+        cases = {
+            "three_hours_old": candle_rows(self.at(18, 0), self.at(18, 30), self.at(19, 0)),
+            "forming_only_after_a_gap": candle_rows(self.at(20, 30), self.at(22, 0)),
+            "empty": {"prices": []},
+        }
+        for name, payload in cases.items():
+            with self.subTest(case=name), self.assertLogs("trading_bot", level="WARNING") as logs:
+                self.assertIsNone(completed_closes(payload, "MINUTE_30", UTC_BOUNDARY))
+            self.assertIn("reason=expected_candle_missing timeframe=MINUTE_30", logs.output[0])
+
+    def test_schedule_override_uses_the_candle_timeframe_not_the_schedule(self):
+        payload = candle_rows(self.at(21, 0), self.at(21, 30), self.at(22, 0))
+        for minute in (5, 25):  # MINUTE_5 schedule inside the 22:00 candle.
+            boundary = UTC_BOUNDARY + timedelta(minutes=minute)
+            self.assertEqual(completed_closes(payload, "MINUTE_30", boundary), [0.0, 1.0])
+        half_past = UTC_BOUNDARY + timedelta(minutes=30)
+        self.assertEqual(completed_closes(payload, "MINUTE_30", half_past), [0.0, 1.0, 2.0])
+        with self.assertLogs("trading_bot", level="WARNING"):  # 22:30 needs the 22:00 candle.
+            self.assertIsNone(completed_closes(candle_rows(self.at(21, 0), self.at(21, 30)),
+                                               "MINUTE_30", half_past))
+        daily = candle_rows(self.at(22, 0, day=15), self.at(22, 0, day=16), self.at(22, 0, day=17))
+        self.assertEqual(completed_closes(daily, "DAY", self.at(22, 0)), [0.0, 1.0])
+
+    def test_malformed_unordered_or_duplicate_candles_skip_the_cycle(self):
+        good = candle_rows(self.at(21, 0), self.at(21, 30))
+        cases = {
+            "duplicate": candle_rows(self.at(21, 30), self.at(21, 30)),
+            "unordered": candle_rows(self.at(21, 30), self.at(21, 0)),
+            "missing_timestamp": {"prices": [{"closePrice": {"ask": 1.0}}]},
+            "bad_timestamp": {"prices": [{"snapshotTimeUTC": "private-marker", "closePrice": {"ask": 1.0}}]},
+            "boolean_close": {"prices": [dict(good["prices"][0], closePrice={"ask": True})]},
+            "nan_close": {"prices": [dict(good["prices"][0], closePrice={"ask": float("nan")})]},
+            "not_a_list": {"prices": {"a": 1}},
+            "not_a_dict": None,
+        }
+        for name, payload in cases.items():
+            with self.subTest(case=name), self.assertLogs("trading_bot", level="WARNING") as logs:
+                self.assertIsNone(completed_closes(payload, "MINUTE_30", UTC_BOUNDARY))
+            self.assertIn("reason=invalid_candle_data", logs.output[0])
+            assert_redacted(self, *logs.output)
 
 
 class GracefulShutdownTests(unittest.TestCase):
@@ -975,6 +1257,150 @@ class HmaRecoveryScenarioTests(unittest.TestCase):
                 orders = self.broker.times("post", "/api/v1/positions")
                 self.assertEqual(len(orders), 1)
                 self.assertGreaterEqual(orders[0], self.at(22, 30))  # Only the next fresh cycle.
+
+
+    # --- Acknowledged orders awaiting broker confirmation (review finding 1) ---
+
+    def test_acknowledged_buy_not_yet_listed_is_never_resent_across_an_outage(self):
+        self.broker.lag = True  # BUY: HTTP 200, but no confirmation and zero listed positions.
+        self.broker.outages.append((self.at(22, 20), self.at(23, 10)))
+        stopped = self.run_hma("--cycles", "4", expect=TradingUnavailable)
+        self.assertEqual(stopped.reason, "order_confirmation_unresolved")
+        self.assertTrue(stopped.outcome_uncertain)
+        self.assertEqual(self.broker.count("post", "/api/v1/positions"), 1)  # Never a second BUY.
+        self.assertEqual(self.broker.listed_positions(), [])  # A naive bot would buy again here.
+        self.assertEqual(self.executed(), [self.at(22, 0)])
+        confirms = self.broker.times("get", "/api/v1/confirms/o_private-marker-1")
+        self.assertTrue(confirms and min(confirms) >= self.at(23, 10))  # Rechecked on the new session.
+        self.assertEqual(self.broker.count("post", "/api/v1/session"), 2)
+        for event in ("Order acknowledged operation=open", "Session reauthenticated",
+                      "Recovery stopped reason=order_confirmation_unresolved",
+                      "not tracked across a restart"):
+            self.assertIn(event, self.output)
+        self.assertNotIn("Scheduled trading resumed", self.output)
+
+    def test_buy_confirmed_after_recovery_resumes_without_a_second_buy(self):
+        self.broker.lag = True
+        self.broker.release_at = self.at(23, 10)  # Confirmed and listed once the network returns.
+        self.broker.outages.append((self.at(22, 20), self.at(23, 10)))
+        self.run_hma("--cycles", "3")
+        self.assertEqual(self.broker.count("post", "/api/v1/positions"), 1)
+        self.assertEqual(self.executed(), [self.at(22, 0), self.at(23, 30), self.at(0, 0, day=18)])
+        self.assertIn("Order confirmed operation=open", self.output)
+        self.assertIn("Scheduled trading resumed environment=DEMO pending_orders=0", self.output)
+
+    def test_pending_confirmation_pauses_cycles_until_the_broker_reflects_the_order(self):
+        self.clock = FakeClock(self.at(21, 59, 30))
+        self.broker = Broker(self.clock)
+        self.broker.lag = True
+        self.broker.release_at = self.at(22, 3, 30)
+        self.run_hma("--time-frame", "MINUTE", "--cycles", "5")
+        self.assertEqual(self.broker.count("post", "/api/v1/positions"), 1)
+        # 22:01-22:03 calculate no signal; 22:04 sees the listed position and buys nothing.
+        self.assertEqual(self.executed(), [self.at(22, 0), self.at(22, 4)])
+        self.assertEqual(self.output.count("reason=order_confirmation_pending"), 3)
+        self.assertNotIn("Trading stopped", self.output)
+
+    def test_acknowledged_close_still_listed_is_never_resent_across_an_outage(self):
+        self.broker.trend = -1
+        self.broker.positions.append({"market": {"epic": "EURUSD"},
+                                      "position": {"dealId": "fixture-deal-private-0"}})
+        self.broker.lag = True
+        self.broker.outages.append((self.at(22, 20), self.at(23, 10)))
+        stopped = self.run_hma("--cycles", "3", expect=TradingUnavailable)
+        self.assertEqual(stopped.reason, "order_confirmation_unresolved")
+        self.assertEqual(self.broker.count("delete", "/api/v1/positions/fixture-deal-private-0"), 1)
+        self.assertEqual(len(self.broker.listed_positions()), 1)  # Still listed after the close.
+        self.assertIn("Recovery stopped reason=order_confirmation_unresolved", self.output)
+
+    def test_close_confirmed_after_recovery_is_not_resent(self):
+        self.broker.trend = -1
+        self.broker.positions.append({"market": {"epic": "EURUSD"},
+                                      "position": {"dealId": "fixture-deal-private-0"}})
+        self.broker.lag = True
+        self.broker.release_at = self.at(23, 10)
+        self.broker.outages.append((self.at(22, 20), self.at(23, 10)))
+        self.run_hma("--cycles", "3")
+        self.assertEqual(sum(m == "delete" for m, _, _ in self.broker.calls), 1)
+        self.assertEqual(self.broker.positions, [])
+        self.assertIn("Order confirmed operation=close", self.output)
+
+    # --- Candle freshness (review finding 2) ---
+
+    def test_fresh_boundary_with_three_hour_old_candles_skips_the_cycle(self):
+        self.broker.candle_lag = timedelta(hours=3)
+        self.run_hma("--cycles", "1")
+        self.assertEqual(self.executed(), [self.at(22, 0)])  # Fresh boundary; history fetched.
+        self.assertIn("reason=expected_candle_missing timeframe=MINUTE_30", self.output)
+        self.assertEqual(self.broker.count("get", "/api/v1/positions", self.at(22, 0)), 0)
+        self.assertEqual(self.broker.count("post", "/api/v1/positions"), 0)
+
+    def test_incomplete_current_candle_never_reaches_the_signal(self):
+        from trading_bot.strategies.indicators import hma_signal
+
+        served = []
+
+        def crash_forming_candle(rows):
+            rows[-1]["closePrice"]["ask"] = 0.5  # The still-forming 22:00 candle.
+            served.extend(rows)
+            return rows
+
+        self.broker.candle_hook = crash_forming_candle
+        self.run_hma("--cycles", "1")
+        closes = [row["closePrice"]["ask"] for row in served]
+        forming = floor_utc(self.at(22, 0).astimezone(timezone.utc), timedelta(minutes=30))
+        self.assertEqual(served[-1]["snapshotTimeUTC"], forming.replace(tzinfo=None).isoformat())
+        self.assertEqual(hma_signal(closes, 16), "SELL")  # Including it would flip the signal...
+        self.assertEqual(hma_signal(closes[:-1], 16), "BUY")
+        self.assertEqual(self.broker.count("post", "/api/v1/positions"), 1)  # ...but only completed ones count.
+
+        self.setUp()  # The forming candle alone, with the expected completed one missing.
+        self.broker.candle_hook = lambda rows: rows[:-3] + rows[-1:]
+        self.run_hma("--cycles", "1")
+        self.assertIn("reason=expected_candle_missing", self.output)
+        self.assertEqual(self.broker.count("post", "/api/v1/positions"), 0)
+
+    def test_schedule_override_validates_against_the_candle_timeframe(self):
+        # A MINUTE_5 schedule from 21:50: the first boundary is 21:55 and the latest
+        # completed MINUTE_30 candle is 21:00 (the 21:30 one is still forming).
+        starts = []
+        self.broker.candle_hook = lambda rows: starts.extend(r["snapshotTimeUTC"] for r in rows) or rows
+        self.run_hma("--schedule-time-frame", "MINUTE_5", "--cycles", "1")
+        self.assertEqual(self.executed(), [self.at(21, 55)])
+        spacing = {datetime.fromisoformat(b) - datetime.fromisoformat(a) for a, b in zip(starts, starts[1:])}
+        self.assertEqual(spacing, {timedelta(minutes=30)})  # Candle resolution is unchanged.
+        self.assertEqual(self.broker.count("post", "/api/v1/positions"), 1)
+
+        self.setUp()  # Same override; the broker's feed is 65 minutes behind, ending at 20:30.
+        self.broker.candle_lag = timedelta(minutes=65)
+        self.run_hma("--schedule-time-frame", "MINUTE_5", "--cycles", "1")
+        self.assertIn("reason=expected_candle_missing", self.output)
+        self.assertEqual(self.broker.count("post", "/api/v1/positions"), 0)
+
+    # --- Freshness inside a close batch (review finding 3) ---
+
+    def test_batch_close_rechecks_freshness_before_each_close(self):
+        self.broker.trend = -1
+        for n in (0, 1):
+            self.broker.positions.append({"market": {"epic": "EURUSD"},
+                                          "position": {"dealId": f"fixture-deal-private-{n}"}})
+        state = {"listed": False}
+
+        def timing(method, path):
+            if method == "get" and path == "/api/v1/positions" and not state["listed"] \
+                    and self.clock.local() >= self.at(22, 0):
+                state["listed"] = True  # The first close starts 119 s after the boundary...
+                self.clock.elapsed = (self.at(22, 1, 59) - self.START).total_seconds()
+            elif method == "delete":
+                self.clock.elapsed += 3  # ...and returns at 122 s, past the 120 s limit.
+
+        self.broker.request_hook = timing
+        self.run_hma("--cycles", "1", "--max-signal-delay", "120")
+        deletes = [(p, t) for m, p, t in self.broker.calls if m == "delete"]
+        self.assertEqual(deletes, [("/api/v1/positions/fixture-deal-private-0", self.at(22, 1, 59))])
+        self.assertEqual([p["position"]["dealId"] for p in self.broker.positions], ["fixture-deal-private-1"])
+        self.assertIn("reason=stale_boundary stage=order", self.output)
+        self.assertIn("Order confirmed operation=close", self.output)  # Reconciled before the check.
 
 
 class HmaLiveAndCliTests(unittest.TestCase):

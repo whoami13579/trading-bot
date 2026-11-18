@@ -86,17 +86,23 @@ def main() -> None:
         CycleGuard,
         GracefulShutdown,
         NetworkSupervisor,
+        PendingOrders,
         ShutdownRequested,
         configure_runtime_logging,
     )
+    from trading_bot.config import strategy_defaults
 
     configure_runtime_logging()
     shutdown = GracefulShutdown()
+    # Held here, not by a client, so unconfirmed DEMO orders survive client replacement.
+    pending = PendingOrders(SYMBOL, enabled=not args.real,
+                            timeout=strategy_defaults.ORDER_CONFIRMATION_TIMEOUT)
     supervisor = NetworkSupervisor(
         recovery_policy,
         environment="live" if args.real else "demo",
         symbol=SYMBOL,
         shutdown=shutdown,
+        pending=pending,
     )
     TIMES = timeframe_to_minutes(args.schedule_time_frame or TIMEFRAME)
     guard = CycleGuard(schedule_interval_seconds(TIMES), args.max_signal_delay)
@@ -113,18 +119,19 @@ def main() -> None:
                     args, symbol=SYMBOL, size=QUANTITY))
             current["api"] = tradingApi
             tradingApi.configure_read_retries(retry_policy)
-            _run_cycles(args, current, supervisor, guard, shutdown, TIMES,
+            _run_cycles(args, current, supervisor, guard, shutdown, pending, TIMES,
                         SYMBOL, TIMEFRAME, HMA_PERIOD, QUANTITY, DAYS, DIRECTION)
     except ShutdownRequested as stop:
-        _report_shutdown(current["api"])
+        _report_shutdown(current["api"], pending)
         raise SystemExit(stop.exit_code) from None
     except KeyboardInterrupt:
-        _report_shutdown(current["api"])
+        _report_shutdown(current["api"], pending)
         raise SystemExit(130) from None
 
 
-def _report_shutdown(api):
+def _report_shutdown(api, pending=None):
     import logging
+    from trading_bot.utils.network_recovery import warn_unconfirmed
 
     uncertain = getattr(api, "_mutation_outcome_uncertain", False) is True
     logging.getLogger("trading_bot.strategies.hma").warning(
@@ -132,9 +139,10 @@ def _report_shutdown(api):
         "; an order request was interrupted and its outcome is uncertain: reconcile on "
         "Capital.com before restarting" if uncertain else "",
     )
+    warn_unconfirmed(pending)
 
 
-def _run_cycles(args, current, supervisor, guard, shutdown, TIMES,
+def _run_cycles(args, current, supervisor, guard, shutdown, pending, TIMES,
                 SYMBOL, TIMEFRAME, HMA_PERIOD, QUANTITY, DAYS, DIRECTION):
     from trading_bot.api.network_errors import TradingUnavailable
 
@@ -162,36 +170,47 @@ def _run_cycles(args, current, supervisor, guard, shutdown, TIMES,
                       f"{len(history['prices'])} prices; session {'renewed' if renewed else 'validated'}")
                 continue
 
+            # Positions are only trustworthy once every acknowledged order is reflected.
+            if not pending.resolve(tradingApi):
+                continue
             if not guard.fresh("signal"):
                 continue
-            hma_result = calculate_hma_result(tradingApi, SYMBOL, TIMEFRAME, HMA_PERIOD)
+            # Only candles completed by this boundary; None when the expected one is missing.
+            hma_result = calculate_hma_result(tradingApi, SYMBOL, TIMEFRAME, HMA_PERIOD, guard.current)
+            if hma_result is None:
+                continue
 
             if hma_result != DIRECTION:
                 all_positions = tradingApi.getAllPositionsList()
                 targets = [pos for pos in all_positions if pos.epic == SYMBOL]
-                if 0 < len(targets):
-                    if not guard.fresh("order"):
-                        continue
-                    for target in targets:
-                        with shutdown.order_request():
-                            result, code = tradingApi.closePosition(target.dealId)
-                        if code != 200:
-                            print(f"failed to close position ({result})")
-
+                code = None
+                for target in targets:
+                    # Each close needs the previous one confirmed and a still-current
+                    # boundary; otherwise the rest wait for the next cycle untouched.
+                    if not pending.resolve(tradingApi, attempts=3) or not guard.fresh("order"):
+                        break
+                    with shutdown.order_request():
+                        result, code = tradingApi.closePosition(target.dealId)
                     if code == 200:
-                        print(f">>> {colors.YELLOW}close position{colors.ENDC}")
+                        pending.record_close(result, deal_id=target.dealId)
                     else:
                         print(f"failed to close position ({result})")
+
+                if code == 200:
+                    print(f">>> {colors.YELLOW}close position{colors.ENDC}")
+                elif code is not None:
+                    print(f"failed to close position ({result})")
             elif hma_result == DIRECTION:
                 all_positions = tradingApi.getAllPositionsList()
                 targets = [pos for pos in all_positions if pos.epic == SYMBOL]
                 if len(targets) == 0:
-                    if not guard.fresh("order"):
+                    if not pending.resolve(tradingApi) or not guard.fresh("order"):
                         continue
                     with shutdown.order_request():
                         result, code = tradingApi.createPosition(SYMBOL, hma_result, QUANTITY)
 
                     if code == 200:
+                        pending.record_open(result, direction=hma_result, size=QUANTITY)
                         color = colors.BLUE if hma_result == "BUY" else colors.RED
                         print(f">>> {color}{hma_result}{colors.ENDC} order submitted")
                     else:

@@ -67,12 +67,17 @@ other way (for example a 503 during session renewal), HMA follows these steps:
    records at its next cycle, so no position or order is reconstructed from memory.
    HMA never creates, changes or cancels working orders; existing working orders on the
    symbol are reported as a warning.
+   Any order that was acknowledged but not yet confirmed (see §4) is rechecked on the new
+   session at this point.
 6. **Resume.** The new client, which keeps the same retry policy, replaces the stopped
    one. The scheduler then waits for the **next future boundary**.
 
-`--max-outage SECONDS` stops the bot once the pause has lasted that long. The default of 0
-waits indefinitely, which suits unattended operation. While paused, the bot logs every
-failed probe, so a long outage is visible in the logs.
+`--max-outage SECONDS` is a monotonic deadline measured from the start of the pause. The
+bot checks it after every sleep and again after every recovery attempt returns. No probe
+starts at or after the deadline, and a recovery that finishes at or after it is discarded
+rather than resumed. A deadline shorter than `--recovery-interval` therefore stops without
+probing. The default of 0 waits indefinitely, which suits unattended operation. While
+paused, the bot logs every failed probe, so a long outage is visible in the logs.
 
 A transient failure **during startup**, before any trade, follows the same pause/probe
 loop using the normal startup factory. Authentication failures at startup still stop
@@ -87,10 +92,24 @@ immediately.
   executed one is skipped, which covers a clock that steps backwards.
 * A cycle is **stale** once more than `--max-signal-delay` seconds (default 120), or one
   full schedule interval, have passed since its boundary. Staleness is checked when the
-  cycle starts, before the signal is calculated, and again immediately before each order
-  request. A stale cycle calculates no signal and submits nothing. This also covers a host
+  cycle starts, before the signal is calculated, and again immediately before **each**
+  order request, including each close in a batch. If the cycle expires between closes,
+  the remaining positions are left untouched until the next cycle. A stale cycle
+  calculates no signal and submits nothing. This also covers a host
   that slept or suspended (common on WSL laptops) and long renewals. With `--days 5`, the
   first boundary after a weekend market-open wait is skipped rather than traded late.
+* **Candle freshness.** A fresh boundary can still receive stale or incomplete broker
+  candles. Before the signal, HMA reads each candle's `snapshotTimeUTC`, which is the
+  interval start in UTC, never the local `snapshotTime`. It uses only the candles of the
+  configured candle timeframe (`--time-frame`) that have completed by the boundary, so a
+  still-forming candle never reaches the signal. The latest completed candle must be the
+  one expected for that boundary: it must have ended after `boundary - timeframe`. For
+  UTC-aligned candles, that is the candle starting at `floor(boundary) - timeframe`.
+  `--schedule-time-frame` changes only when cycles run. With a 5-minute schedule and
+  30-minute candles, the 22:05 cycle expects the 21:30 candle. If the expected candle is
+  missing, or the history is malformed, unordered or contains duplicates, the cycle is
+  skipped (`reason=expected_candle_missing` or `reason=invalid_candle_data`). This also
+  skips cycles while the market is closed or the feed lags.
 * Boundaries compare as full UTC datetimes, so recovery across midnight, month or year
   ends schedules normally.
 * The loop is single-threaded: keepalive pings, cycles and recovery never overlap.
@@ -116,6 +135,27 @@ immediately.
   cannot be proven from confirmations. Pausing and auto-resuming would risk a duplicate,
   so the bot stops instead. `TradingApi.recovered_client()` also refuses to build a
   replacement after an uncertain outcome.
+* **Acknowledged but unconfirmed DEMO orders block further orders.** The broker can
+  return HTTP 200 for an open or close before its confirmation is published or the
+  position list reflects it. A bot deciding from that list could then send the same order
+  again. HMA therefore keeps each acknowledged `dealReference` in a tracker owned by the
+  strategy, not by the client, so the reference survives client replacement after an
+  outage. Before every new decision it reads `GET /confirms/{dealReference}` and the
+  position list, and only resolves an entry when both of these hold:
+  * the confirmation is `ACCEPTED` and matches the order (reference; for an open: epic,
+    direction, size and exactly one `OPENED` deal)
+  * the opened deal is listed, or the closed deal is gone
+
+  Checks run at each cycle start, between closes in a batch (up to 3 reads, 1 s apart),
+  and right after recovery reauthenticates. While an entry is pending (404, `PENDING`,
+  `UNKNOWN`, or the list not caught up), no signal is calculated and no order is sent
+  (`reason=order_confirmation_pending`). A rejected, malformed or mismatched
+  confirmation, or an acknowledgement without a usable reference, stops the bot for
+  manual reconciliation (`order_confirmation_mismatch`). So does an entry still
+  unresolved after 300 seconds (`ORDER_CONFIRMATION_TIMEOUT` in `strategy_defaults.py`,
+  reason `order_confirmation_unresolved`). Only read-only endpoints are used, and nothing
+  is resubmitted. LIVE keeps its own synchronous confirmation inside the execution gate,
+  so the tracker is disabled there.
 * The existing single-send protections are unchanged. These include the local order quota,
   the LIVE gate's durable pending-intent journal, confirmation polling without resubmission
   and ownership checks.
@@ -153,9 +193,12 @@ overridden on the command line without code changes:
 | `--network-retry-max-delay S` | 30.0 | Cap for one retry delay |
 | `--network-retry-jitter F` | 0.2 | ±fraction of randomization per delay (0–0.99) |
 | `--recovery-interval S` | 60.0 | Seconds between connectivity probes while paused (1–3600) |
-| `--max-outage S` | 0 | Stop after this many paused seconds; 0 = wait indefinitely |
+| `--max-outage S` | 0 | Monotonic pause deadline: no probe or resume at or after it; 0 = wait indefinitely |
 | `--max-signal-delay S` | 120.0 | Skip a cycle that starts later than this after its boundary |
 | `--no-network-recovery` | off | Stop on an outage instead of pausing |
+
+The DEMO order confirmation timeout, `ORDER_CONFIRMATION_TIMEOUT` (300 s), is a default
+in `strategy_defaults.py` with no CLI option.
 
 `--network-retries 0 --no-network-recovery` restores the previous fail-closed behavior.
 Invalid values are rejected before credentials are loaded or any request is made.
@@ -181,19 +224,26 @@ own handlers.
 | Recovered | `Connectivity recovered environment=DEMO attempt=5 outage_seconds=78` |
 | Resumed | `Scheduled trading resumed environment=DEMO; missed boundaries are skipped ...` |
 | Skipped cycle | `Scheduled cycle skipped reason=stale_boundary stage=order ...` |
+| Stale candles | `Scheduled cycle skipped reason=expected_candle_missing timeframe=MINUTE_30 boundary_utc=... latest_completed_candle_utc=...` |
+| Order pending | `Order acknowledged operation=open ...`, `Scheduled cycle skipped reason=order_confirmation_pending pending_orders=1 ...` |
+| Order confirmed | `Order confirmed operation=open; broker positions reflect it` |
+| Order unresolved | `Trading stopped reason=order_confirmation_unresolved operation=open detail=confirmation_timeout ...` |
 | Unrecoverable | `Trading stopped reason=authentication_failed_http_401 ...` |
 
 ## 8. Stopping and restarting safely
 
 * **Stop:** press Ctrl+C or send SIGTERM. The exit code is 130 or 143. The bot finishes an
   in-flight order request first and never closes positions on exit; broker stops (LIVE)
-  remain in place. The final log line says whether an order outcome is uncertain.
+  remain in place. The final log line says whether an order outcome is uncertain. Any
+  order still awaiting confirmation is reported at CRITICAL level, because it is not
+  remembered after a restart.
 * **Restart after a network stop** (for example `--max-outage` reached, or recovery
   disabled): restarting is safe once connectivity is back. HMA reads broker positions
   every cycle and opens a position only when none exists for the symbol.
 * **Restart after an uncertain order outcome:** first check Capital.com for positions and
   working orders on the symbol, and confirm whether the last open/close took effect.
-  DEMO HMA has no durable journal, so a restart does not remember the uncertainty. LIVE
+  The same applies after an `order_confirmation_*` stop. DEMO HMA has no durable journal,
+  so a restart remembers neither the uncertainty nor any pending confirmation. LIVE
   restart is blocked by the gate's journal until it is reconciled; never clear that state
   just to retry an order.
 * **Prolonged outage:** the bot stays paused, probing every interval and logging each
@@ -218,8 +268,13 @@ HMA loop against a stateful offline broker on a deterministic clock. It covers:
 * prolonged outages and `--max-outage`
 * reconciliation of existing positions
 * ambiguous open and close outcomes
-* duplicate prevention
-* skipped and stale candles
+* duplicate prevention, including an acknowledged BUY or close that is not yet listed when
+  an outage starts
+* confirmation mismatch and timeout
+* skipped and stale boundaries
+* stale, incomplete and gapped candles, with and without `--schedule-time-frame`
+* freshness between closes in a batch
+* the `--max-outage` deadline
 * recovery across midnight
 * shutdown during recovery
 * log redaction
@@ -236,10 +291,16 @@ calculated, no orders were sent and no LIVE request was made.
 
 * Only HMA uses pause/resume. The other strategies keep the previous fail-closed behavior.
 * LIVE never auto-resumes (by design, see §5).
-* DEMO HMA keeps no durable journal. An uncertain outcome stops the process, and a manual
-  restart relies on the operator's reconciliation.
-* Recovery does not validate candle timestamps. Freshness is enforced through boundary age
-  and live retrieval at the cycle time, and the HMA signal rule itself is unchanged.
+* DEMO HMA keeps no durable journal. Unconfirmed orders are tracked across client
+  replacement and reconnection, but only in memory: **not across a process restart**. An
+  uncertain or unresolved outcome stops the process, and a manual restart relies on the
+  operator's reconciliation.
+* Confirmation handling was verified against a mocked broker that follows the documented
+  `/confirms` response shape, not against real DEMO orders.
+* Candle freshness requires the broker's candle for the expected period. A quiet market
+  that publishes no candle for a period, or the market being closed, skips the cycle.
+  The signal now uses completed candles only; previously the still-forming candle was
+  included.
 * A second HMA process on the same DEMO account is not prevented. The LIVE gate's account
   lock still applies to LIVE.
 * The scheduler still uses local wall-clock minutes. Around a DST fall-back, the repeated

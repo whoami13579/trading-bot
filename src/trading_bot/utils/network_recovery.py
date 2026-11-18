@@ -11,6 +11,9 @@ Safety model
   are not outages and repeated logins could lock an account.
 * LIVE never resumes automatically: a new LIVE session requires the full preflight.
 * Missed candle boundaries are never replayed and a boundary is executed at most once.
+* A DEMO order acknowledged with HTTP 200 stays pending, across client replacement,
+  until the broker confirms it and the position list reflects it. No further
+  strategy order is sent meanwhile; an overdue or inconsistent one stops trading.
 
 Log messages contain only fixed reason codes, counts and durations: never
 credentials, tokens, account or deal identifiers, URLs or exception text.
@@ -19,8 +22,10 @@ credentials, tokens, account or deal identifiers, URLs or exception text.
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 import logging
 import random
+import re
 import signal
 import sys
 import threading
@@ -186,12 +191,8 @@ def _invalid():
     raise TradingUnavailable("invalid_api_response")
 
 
-def reconcile_broker_state(api, symbol: str) -> dict:
-    """Read and validate open positions and working orders on the recovered session.
-
-    The strategy derives every decision from these broker records at its next
-    cycle, so nothing is replayed from memory. Only counts are logged.
-    """
+def broker_positions(api) -> list:
+    """Every open position on the account, validated; malformed data stops trading."""
     payload, status = api.getAllPositions()
     if status != 200 or not isinstance(payload, dict) or not isinstance(payload.get("positions"), list):
         _invalid()
@@ -205,6 +206,16 @@ def reconcile_broker_state(api, symbol: str) -> dict:
             and isinstance(row["position"].get("dealId"), str)
         ):
             _invalid()
+    return positions
+
+
+def reconcile_broker_state(api, symbol: str) -> dict:
+    """Read and validate open positions and working orders on the recovered session.
+
+    The strategy derives every decision from these broker records at its next
+    cycle, so nothing is replayed from memory. Only counts are logged.
+    """
+    positions = broker_positions(api)
     working = api.getAllWorkingOrders()
     if not isinstance(working, dict) or not isinstance(working.get("workingOrders"), list):
         _invalid()
@@ -232,6 +243,158 @@ def reconcile_broker_state(api, symbol: str) -> dict:
     return summary
 
 
+_DEAL_REFERENCE = re.compile(r"[A-Za-z0-9_-]{1,128}")
+
+
+def _same_size(value, expected) -> bool:
+    try:
+        return Decimal(str(value)) == Decimal(str(expected))
+    except (InvalidOperation, ValueError):
+        return False
+
+
+class PendingOrders:
+    """DEMO strategy orders acknowledged with HTTP 200 but not yet confirmed and reconciled.
+
+    The broker can acknowledge an order before its confirmation is available or the
+    position list reflects it. Deciding from that list too early could send the same
+    order twice, so while any entry is unresolved no strategy order is allowed.
+
+    Entries are held by the strategy, not by a client, so they survive client
+    replacement after an outage. They are kept in memory only: a process restart loses
+    them, and every stop or shutdown with entries left warns that manual reconciliation
+    is required. Only the read-only confirmation and positions endpoints are used; an
+    order is never resubmitted.
+    """
+
+    def __init__(self, symbol, *, enabled=True, timeout=300.0, monotonic=None, sleep=None):
+        self.symbol = symbol
+        self.enabled = enabled
+        self.timeout = bounded_seconds(timeout, "order_confirmation_timeout", minimum=1.0, maximum=86400.0)
+        self._monotonic = monotonic
+        self._sleep = sleep
+        self.entries = []
+
+    def __len__(self):
+        return len(self.entries)
+
+    def monotonic(self):
+        return (self._monotonic if self._monotonic is not None else time.monotonic)()
+
+    def sleep(self, seconds):
+        (self._sleep if self._sleep is not None else time.sleep)(seconds)
+
+    def record_open(self, result, *, direction, size):
+        self._record(result, operation="open", direction=direction, size=size)
+
+    def record_close(self, result, *, deal_id):
+        self._record(result, operation="close", deal_id=deal_id)
+
+    def _record(self, result, **order):
+        if not self.enabled:
+            return  # LIVE confirms and verifies every order inside its execution gate.
+        reference = result.get("dealReference") if isinstance(result, dict) else None
+        if not isinstance(reference, str) or not _DEAL_REFERENCE.fullmatch(reference):
+            reference = None  # Unconfirmable: the next resolution stops for manual review.
+        self.entries.append({**order, "reference": reference, "since": self.monotonic()})
+        _LOGGER.info(
+            "Order acknowledged operation=%s; no further strategy order until the broker "
+            "confirms it and positions reflect it", order["operation"],
+        )
+
+    def _fail(self, reason, entry, detail):
+        _LOGGER.critical(
+            "Trading stopped reason=%s operation=%s detail=%s: a submitted order could not be "
+            "reconciled with its broker confirmation and positions. It is never resubmitted "
+            "automatically. Manual reconciliation of positions and working orders is "
+            "required before restart.", reason, entry["operation"], detail,
+        )
+        raise TradingUnavailable(reason, mutation=True)
+
+    def _opened_deal(self, confirmation, entry):
+        affected = confirmation.get("affectedDeals")
+        if not (
+            confirmation.get("epic") == self.symbol
+            and confirmation.get("direction") == entry["direction"]
+            and _same_size(confirmation.get("size"), entry["size"])
+            and isinstance(affected, list)
+            and len(affected) == 1
+            and isinstance(affected[0], dict)
+            and affected[0].get("status") == "OPENED"
+            and isinstance(affected[0].get("dealId"), str)
+            and affected[0]["dealId"]
+        ):
+            self._fail("order_confirmation_mismatch", entry, "confirmation_differs_from_order")
+        return affected[0]["dealId"]
+
+    def _reconciled(self, api, entry, positions):
+        """True when confirmed and reflected in positions; False while still pending."""
+        if entry["reference"] is None:
+            self._fail("order_confirmation_mismatch", entry, "missing_deal_reference")
+        confirmation = api.getPositionOrderConfirmation(entry["reference"])
+        if confirmation is None:
+            return False  # HTTP 404: the broker has not published the confirmation yet.
+        if not isinstance(confirmation, dict):
+            self._fail("order_confirmation_mismatch", entry, "invalid_confirmation")
+        status = confirmation.get("dealStatus")
+        if status in ("PENDING", "UNKNOWN"):
+            return False
+        if status != "ACCEPTED" or confirmation.get("dealReference") != entry["reference"]:
+            self._fail("order_confirmation_mismatch", entry, "confirmation_not_accepted")
+        if not positions:
+            positions.append(broker_positions(api))
+        rows = positions[0]
+        if entry["operation"] == "open":
+            deal_id = self._opened_deal(confirmation, entry)
+            return any(
+                row["position"]["dealId"] == deal_id and row["market"]["epic"] == self.symbol
+                for row in rows
+            )
+        return not any(row["position"]["dealId"] == entry["deal_id"] for row in rows)
+
+    def resolve(self, api, *, attempts=1, delay=1.0) -> bool:
+        """Return True once nothing is pending; False while confirmation is still pending.
+
+        Raises TradingUnavailable (outcome uncertain) when a confirmation is rejected,
+        malformed or inconsistent, or still unresolved after ``timeout`` seconds.
+        """
+        for attempt in range(attempts):
+            if not self.entries:
+                return True
+            if attempt:
+                self.sleep(delay)
+            positions = []  # Fetched at most once per attempt, only after a confirmation.
+            remaining = []
+            for entry in self.entries:
+                if self._reconciled(api, entry, positions):
+                    _LOGGER.info(
+                        "Order confirmed operation=%s; broker positions reflect it", entry["operation"]
+                    )
+                else:
+                    remaining.append(entry)
+            self.entries = remaining
+        if not self.entries:
+            return True
+        age = self.monotonic() - min(entry["since"] for entry in self.entries)
+        if age >= self.timeout:
+            self._fail("order_confirmation_unresolved", self.entries[0], "confirmation_timeout")
+        _LOGGER.warning(
+            "Scheduled cycle skipped reason=order_confirmation_pending pending_orders=%d "
+            "age_seconds=%.0f timeout_seconds=%.0f; no signal or order until confirmed",
+            len(self.entries), age, self.timeout,
+        )
+        return False
+
+
+def warn_unconfirmed(pending):
+    if pending is not None and len(pending):
+        _LOGGER.critical(
+            "%d acknowledged order(s) are not yet confirmed by the broker. They are not "
+            "tracked across a restart: reconcile positions on Capital.com before restarting.",
+            len(pending),
+        )
+
+
 def _uncertain(exc, api) -> bool:
     return getattr(exc, "outcome_uncertain", False) is True or (
         getattr(api, "_mutation_outcome_uncertain", False) is True
@@ -251,6 +414,7 @@ class NetworkSupervisor:
         sleep: Callable[[float], object] | None = None,
         monotonic: Callable[[], float] | None = None,
         shutdown: GracefulShutdown | None = None,
+        pending: PendingOrders | None = None,
     ):
         self.policy = policy
         self.environment = environment
@@ -259,6 +423,7 @@ class NetworkSupervisor:
         self._sleep = sleep
         self._monotonic = monotonic
         self.shutdown = shutdown
+        self.pending = pending
         self.outages = 0
 
     def sleep(self, seconds):
@@ -297,10 +462,22 @@ class NetworkSupervisor:
             )
             raise exc
 
+    def _stop_at_deadline(self, exc, reason, started, deadline):
+        now = self.monotonic()
+        if deadline is not None and now >= deadline:
+            _LOGGER.error(
+                "Trading stopped reason=%s environment=%s: outage lasted %.0f seconds, "
+                "reaching max_outage_seconds=%.0f; trading is not resumed", reason,
+                self.environment.upper(), now - started, self.policy.max_outage,
+            )
+            raise exc
+
     def _wait_until(self, exc, attempt_once: Callable, *, phase: str):
         reason = exc.reason
         self.outages += 1
         started = self.monotonic()
+        # A monotonic deadline: no probe starts, and no recovery resumes, at or after it.
+        deadline = started + self.policy.max_outage if self.policy.max_outage else None
         _LOGGER.warning(
             "Trading paused reason=%s environment=%s phase=%s recovery_interval_seconds=%.0f "
             "max_outage_seconds=%s; no signals or orders while paused",
@@ -309,20 +486,14 @@ class NetworkSupervisor:
         )
         attempt = 0
         while True:
-            elapsed = self.monotonic() - started
-            if self.policy.max_outage and elapsed >= self.policy.max_outage:
-                _LOGGER.error(
-                    "Trading stopped reason=%s environment=%s: outage lasted %.0f seconds, "
-                    "exceeding max_outage_seconds=%.0f", reason, self.environment.upper(),
-                    elapsed, self.policy.max_outage,
-                )
-                raise exc
+            self._stop_at_deadline(exc, reason, started, deadline)
             delay = self.policy.next_delay()
-            if self.policy.max_outage:
-                delay = min(delay, max(0.0, self.policy.max_outage - elapsed))
+            if deadline is not None:
+                delay = min(delay, deadline - self.monotonic())
             if self.shutdown is not None:
                 self.shutdown.check()
             self.sleep(delay)
+            self._stop_at_deadline(exc, reason, started, deadline)
             attempt += 1
             try:
                 result = attempt_once()
@@ -340,6 +511,8 @@ class NetworkSupervisor:
                     reason, attempt, self.monotonic() - started,
                 )
                 continue
+            # A recovery that returns at or after the deadline is discarded, not resumed.
+            self._stop_at_deadline(exc, reason, started, deadline)
             _LOGGER.info(
                 "Connectivity recovered environment=%s attempt=%d outage_seconds=%.0f",
                 self.environment.upper(), attempt, self.monotonic() - started,
@@ -357,7 +530,14 @@ class NetworkSupervisor:
             return api
 
     def recover(self, exc: TradingUnavailable, api):
-        """Return a verified replacement client, or re-raise ``exc`` to stop trading."""
+        """Return a verified replacement client, or re-raise to stop trading."""
+        try:
+            return self._recover(exc, api)
+        except TradingUnavailable:  # A shutdown reports pending orders itself.
+            warn_unconfirmed(self.pending)
+            raise
+
+    def _recover(self, exc, api):
         self._require_recoverable(exc, api)
 
         def attempt():
@@ -367,12 +547,17 @@ class NetworkSupervisor:
                 "match the original session", self.environment.upper(),
             )
             self.reconcile(client, self.symbol)
+            if self.pending is not None:
+                # Unconfirmed orders survive the client replacement and are rechecked on
+                # the new session; inconsistent or overdue ones stop recovery here.
+                self.pending.resolve(client)
             return client
 
         client = self._wait_until(exc, attempt, phase="scheduled")
         _LOGGER.info(
-            "Scheduled trading resumed environment=%s; missed boundaries are skipped and "
-            "the next future boundary is used", self.environment.upper(),
+            "Scheduled trading resumed environment=%s pending_orders=%d; missed boundaries are "
+            "skipped and the next future boundary is used", self.environment.upper(),
+            len(self.pending) if self.pending is not None else 0,
         )
         return client
 

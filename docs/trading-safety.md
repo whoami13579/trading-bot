@@ -91,7 +91,10 @@ account changes invalidate the gate and require a new automated preflight.
 Network outages: the HMA strategy retries read-only GETs with bounded backoff, and in
 DEMO pauses and resumes after re-authentication and broker reconciliation. Trade-changing
 requests are never retried. An uncertain order outcome stops the bot for manual
-reconciliation, and LIVE never resumes automatically. See
+reconciliation, and LIVE never resumes automatically. A DEMO order acknowledged with HTTP
+200 blocks further strategy orders until the broker confirms it and the position list
+reflects it. This holds across reconnection but not across a process restart. Signals use
+only the completed candle expected for each boundary. See
 [network recovery](network-recovery.md).
 
 Ctrl+C stops the process without liquidating positions. In HMA, Ctrl+C or SIGTERM during

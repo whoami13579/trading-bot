@@ -25,3 +25,6 @@ NETWORK_RETRY_JITTER = 0.2  # Each delay is randomized by up to +/-20%.
 RECOVERY_INTERVAL = 60.0  # Seconds between connectivity checks while paused (DEMO only).
 MAX_OUTAGE = 0.0  # Seconds paused before giving up; 0 waits indefinitely.
 MAX_SIGNAL_DELAY = 120.0  # Skip a cycle whose boundary is older than this, in seconds.
+# DEMO: an acknowledged order must be confirmed and visible in positions within this many
+# seconds; until then no strategy order is sent, afterwards trading stops for manual review.
+ORDER_CONFIRMATION_TIMEOUT = 300.0
