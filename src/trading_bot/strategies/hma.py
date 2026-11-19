@@ -170,7 +170,11 @@ def _run_cycles(args, current, supervisor, guard, shutdown, pending, TIMES,
                 pass
             elif DAYS == 5:
                 if not tradingApi.is_market_open():
-                    tradingApi.wait_until_open()
+                    # Confirmation checks and their deadline stay active over the weekend.
+                    # They only read; the boundary that found the market closed is stale
+                    # by reopening, so no strategy cycle runs until the next boundary.
+                    closed = {"poll": lambda: pending.poll(tradingApi)} if pending.pollable() else {}
+                    tradingApi.wait_until_open(**closed)
 
             # Each boundary runs at most once, and never after it has become stale.
             if not guard.start(boundary):

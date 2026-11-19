@@ -106,10 +106,13 @@ immediately.
   it sends an order, which takes time after HMA's own check. HMA binds the cycle to the
   gate, so the gate checks the deadline again after those reads and before writing its
   durable intent. If the cycle expired, nothing is written or sent and no opening-order or
-  charge allowance is used (`reason=stale_boundary stage=live_send`). It checks once more
-  after the durable write, immediately before the request. If the cycle expired during the
-  write, the intent and allowances are rolled back unsent. A request that is sent keeps
-  the durable intent written before it. This also covers a host
+  charge allowance is used (`reason=stale_boundary stage=live_send`). It checks again
+  after the durable write. The local rate limiter can then sleep before the request, so the
+  client makes the final check after rate limiting, immediately before the HTTP call, for
+  both opens and closes. If the cycle expired during the write or while rate limited, the
+  request never reaches the transport, the gate returns a known-unsent result, and the
+  intent and allowances are rolled back. A request that is sent keeps the durable intent
+  written before it. This also covers a host
   that slept or suspended (common on WSL laptops) and long renewals. With `--days 5`, the
   first boundary after a weekend market-open wait is skipped rather than traded late.
 * **Candle freshness.** A fresh boundary can still receive stale or incomplete broker
@@ -171,10 +174,17 @@ immediately.
   (`ORDER_CONFIRMATION_TIMEOUT`). The deadline does not depend on the candle schedule. The
   scheduler wait checks the confirmation as soon as it starts, then every 10 seconds
   (`ORDER_CONFIRMATION_POLL_INTERVAL`). The last check falls exactly on the deadline.
-  Polling only reads the confirmation and position list. It never calculates a signal,
+  With `--days 5`, polling continues during the market-closed wait, so an order
+  acknowledged just before Friday's close is still confirmed, or the bot stops, by its
+  deadline rather than on Sunday. The market-closed wait still checks the market every
+  60 seconds. Polling only reads the confirmation and position list. It never calculates a signal,
   runs a cycle or sends an order between boundaries, and it stops once the order is
   confirmed. Waits between in-batch checks, read-retry backoff during these checks and the
-  outage pause (§2) never extend past the deadline. An entry still unresolved at the
+  outage pause (§2) never extend past the deadline. The deadline is checked again after
+  the backoff and after rate limiting, so a read retry never starts at or after it. No
+  confirmation check starts after the deadline. A check that finishes after it never
+  clears the order, even if the broker reports success: a late confirmation or position
+  read cannot let trading resume. An entry still unresolved at the
   deadline stops the bot for manual reconciliation (`order_confirmation_unresolved`). On
   the default 30-minute schedule that is about 300 seconds after the order, not at the
   next boundary 1,800 seconds later. Only read-only endpoints are used, and nothing is
@@ -303,8 +313,14 @@ HMA loop against a stateful offline broker on a deterministic clock. It covers:
   an outage starts
 * confirmation mismatch and timeout, including the 300-second deadline on the default
   30-minute schedule, polling during the wait and during an outage
+* the confirmation deadline through read retries, rate limiting and slow reads: a retry
+  backing off to the deadline is never sent, and a read finishing after it never clears
+  the order
+* an order acknowledged just before Friday's close with `--days 5`: it stops at its
+  deadline if unconfirmed, and otherwise waits for the next trading cycle
 * SIGTERM deferred during a successful open or close, and warnings at every exit
-* LIVE gate reads that push an order past `--max-signal-delay` (no POST or DELETE)
+* LIVE gate reads, and the real rate limiter, that push an order past
+  `--max-signal-delay` (no POST or DELETE)
 * skipped and stale boundaries
 * stale, incomplete and gapped candles, with and without `--schedule-time-frame`
 * freshness between closes in a batch
@@ -333,7 +349,15 @@ calculated, no orders were sent and no LIVE request was made.
   resuming, because the order cannot be confirmed meanwhile.
 * The confirmation deadline bounds waits and retry backoff, but an individual HTTP
   request can still take up to its 5-second connect and 20-second read timeouts. The stop
-  can therefore come that much after the deadline.
+  can therefore come that much after the deadline. A read that returns late never clears
+  the order; it only delays the stop.
+* The final confirmation check on the deadline counts only if it completes by the
+  deadline. With real network latency it almost never does, so the last check that can
+  resolve an order in practice is the one about 10 seconds earlier.
+* With `--days 5`, a transient network failure during weekend polling enters the normal
+  outage pause, which is bounded by the same deadline. Once nothing is pending, the
+  weekend wait makes no broker requests, so the session is renewed at the first cycle
+  after the market opens.
 * An acknowledgement without a usable `dealReference` cannot be polled. It stops the bot
   at the next cycle start, before any signal or order, rather than during the wait.
 * Confirmation handling was verified against a mocked broker that follows the documented

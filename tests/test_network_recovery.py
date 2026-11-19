@@ -260,6 +260,9 @@ def broker_patches(stack, broker, clock):
         ))
     now = stack.enter_context(patch.object(scheduler, "datetime"))
     now.now.side_effect = clock.local
+    # Market hours (--days 5) and transport-failure log timestamps follow the same clock.
+    utc = stack.enter_context(patch("trading_bot.api.client.datetime"))
+    utc.now.side_effect = lambda *args, **kwargs: clock.utc()
     stack.enter_context(patch("time.sleep", side_effect=clock.sleep))
     stack.enter_context(patch("time.monotonic", side_effect=clock.monotonic))
     stack.enter_context(patch("trading_bot.utils.network_recovery._utc_now", side_effect=clock.utc))
@@ -720,6 +723,54 @@ class CycleGuardAndSchedulerTests(unittest.TestCase):
         self.assertEqual(poll.call_count, 2)
 
 
+    def run_closed_market_wait(self, poll, open_after):
+        clock = FakeClock(datetime(2026, 11, 20, 22, 0, 2))
+        api = client()
+        calls = []
+
+        def market_open():
+            calls.append(("market", clock.elapsed))
+            return clock.elapsed >= open_after
+
+        def recorded_poll():
+            calls.append(("poll", clock.elapsed))
+            return poll()
+
+        with (
+            patch.object(api, "is_market_open", side_effect=market_open),
+            patch("time.monotonic", side_effect=clock.monotonic),
+            patch("time.sleep", side_effect=clock.sleep),
+            redirect_stdout(io.StringIO()),
+        ):
+            api.wait_until_open(poll=recorded_poll)
+        return calls, clock
+
+    def test_market_closed_wait_keeps_polling_until_resolved_then_waits_for_open(self):
+        pauses = iter([10.0, 10.0, 0.5, None])
+        calls, clock = self.run_closed_market_wait(lambda: next(pauses), open_after=180)
+        self.assertEqual(calls, [("market", 0.0), ("poll", 0.0), ("poll", 10.0), ("poll", 20.0),
+                                 ("poll", 20.5), ("market", 60.0), ("market", 120.0), ("market", 180.0)])
+        self.assertEqual(clock.elapsed, 180.0)  # The market is still checked every 60 s.
+
+    def test_market_closed_wait_stops_when_a_poll_fails(self):
+        poll = Mock(side_effect=[10.0] * 30 + [TradingUnavailable("order_confirmation_unresolved", mutation=True)])
+        with self.assertRaises(TradingUnavailable):
+            self.run_closed_market_wait(poll, open_after=86400)
+        self.assertEqual(poll.call_count, 31)  # Stopped at 300 s, long before the market opens.
+
+    def test_market_closed_wait_without_poll_is_unchanged(self):
+        clock = FakeClock(datetime(2026, 11, 20, 22, 0, 2))
+        api = client()
+        with (
+            patch.object(api, "is_market_open", side_effect=[False, False, True]),
+            patch("time.sleep", side_effect=clock.sleep),
+            redirect_stdout(io.StringIO()) as stdout,
+        ):
+            api.wait_until_open()
+        self.assertEqual(clock.sleeps, [60, 60])
+        self.assertIn("Market is now OPEN!", stdout.getvalue())
+
+
 class SupervisorTests(unittest.TestCase):
     def supervisor(self, environment="demo", **policy):
         self.sleeps = []
@@ -1094,7 +1145,8 @@ class PendingOrderTests(unittest.TestCase):
         ):
             api.getPositionOrderConfirmation("o_reference")
         self.assertEqual(sleeps, [2.0, 3.0])  # 2 s, then capped to the 3 s left; no 8 s wait.
-        self.assertEqual(get.call_count, 3)
+        # The backoff ends exactly on the deadline: that retry is never started.
+        self.assertEqual(get.call_count, 2)
         self.assertEqual(stopped.exception.reason, "dns_resolution_failed")
         self.assertIn("confirmation deadline reached", "\n".join(logs.output))
         self.assertIsNone(api._read_retry_deadline)  # Restored after the block.
@@ -1125,6 +1177,177 @@ class PendingOrderTests(unittest.TestCase):
 
 
 UTC_BOUNDARY = datetime(2026, 11, 17, 22, 0, tzinfo=timezone.utc)
+
+
+class ConfirmationDeadlineTests(unittest.TestCase):
+    """Third review, 2: the confirmation deadline holds through retries and reconciliation.
+
+    The real client request path, read retries and rate limiter run against a mocked
+    DEMO transport. One fake clock drives monotonic time and every sleep. The order is
+    acknowledged at t=0, so its deadline is t=300 s.
+    """
+
+    def setUp(self):
+        from trading_bot.api import rate_limits
+
+        self.now = [1000.0]
+        self.sleeps = []
+        self.reads = []  # (path, start seconds, end seconds)
+        self.script = deque()  # Per GET: (seconds the read takes, outcome).
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        self.stack.enter_context(patch.object(
+            rate_limits, "_STATE", defaultdict(rate_limits._STATE.default_factory)))
+        self.stack.enter_context(patch("time.monotonic", side_effect=lambda: self.now[0]))
+        self.stack.enter_context(patch("time.sleep", side_effect=self.sleep))
+        self.stack.enter_context(patch("trading_bot.api.client.requests.get", side_effect=self.get))
+        self.post = self.stack.enter_context(patch("trading_bot.api.client.requests.post"))
+        self.delete = self.stack.enter_context(patch("trading_bot.api.client.requests.delete"))
+        self.api = client(RetryPolicy(max_retries=3, base_delay=2.0, jitter=0.0, sleep=self.sleep))
+        self.pending = PendingOrders("EURUSD", timeout=300, monotonic=lambda: self.now[0], sleep=self.sleep)
+        with self.assertLogs("trading_bot", level="INFO"):
+            self.pending.record_open({"dealReference": "o_reference"}, direction="BUY", size=100)
+
+    def at(self, seconds):
+        self.now[0] = 1000.0 + seconds
+
+    def elapsed(self):
+        return round(self.now[0] - 1000.0, 3)
+
+    def sleep(self, seconds):
+        self.sleeps.append(round(seconds, 3))
+        self.now[0] += seconds
+
+    def get(self, url, **kwargs):
+        path = urlsplit(url).path
+        start = self.elapsed()
+        duration, outcome = self.script.popleft()
+        self.now[0] += duration
+        self.reads.append((path, start, self.elapsed()))
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    @staticmethod
+    def accepted():
+        return ok({"dealReference": "o_reference", "dealStatus": "ACCEPTED", "epic": "EURUSD",
+                   "direction": "BUY", "size": 100,
+                   "affectedDeals": [{"dealId": "fixture-deal-private-1", "status": "OPENED"}]})
+
+    @staticmethod
+    def listed():
+        return ok({"positions": [{"market": {"epic": "EURUSD"},
+                                  "position": {"dealId": "fixture-deal-private-1"}}]})
+
+    def supervisor(self):
+        return NetworkSupervisor(RecoveryPolicy(interval=60, jitter=0), environment="demo",
+                                 symbol="EURUSD", sleep=self.sleep, monotonic=lambda: self.now[0],
+                                 pending=self.pending)
+
+    def assert_still_pending_without_mutations(self):
+        self.assertEqual(len(self.pending), 1)
+        self.post.assert_not_called()
+        self.delete.assert_not_called()
+
+    def test_failed_read_at_299s_never_retries_at_300s_and_stops_for_reconciliation(self):
+        # The reproduction: GET fails at 299 s, backoff to 300 s, a retry taking 4 s confirms.
+        self.at(299)
+        self.script.extend([(0, reset_error()), (4, self.accepted()), (0, self.listed())])
+        with self.assertLogs("trading_bot", level="WARNING") as logs, \
+                self.assertRaises(TradingUnavailable) as failed:
+            self.pending.poll(self.api)
+        self.assertEqual(failed.exception.reason, "connection_failed")
+        self.assertEqual(self.sleeps, [1.0])  # Backoff capped to the second left.
+        self.assertEqual(self.reads, [("/api/v1/confirms/o_reference", 299, 299)])  # No retry at 300 s.
+        self.assertEqual(self.elapsed(), 300)
+        self.assertIn("confirmation deadline reached before the retry started", "\n".join(logs.output))
+        self.assert_still_pending_without_mutations()
+
+        # The HMA loop hands the outage to the supervisor: it stops at once, no login.
+        with self.assertLogs("trading_bot", level="WARNING") as logs, \
+                self.assertRaises(TradingUnavailable) as stopped:
+            self.supervisor().recover(failed.exception, self.api)
+        self.assertEqual(stopped.exception.reason, "order_confirmation_unresolved")
+        self.assertTrue(stopped.exception.outcome_uncertain)
+        self.assertEqual(len(self.reads), 1)
+        self.assertEqual(self.elapsed(), 300)  # Never 304 s.
+        self.assertIn("detail=confirmation_timeout", "\n".join(logs.output))
+        self.assert_still_pending_without_mutations()
+
+    def test_retry_delayed_past_the_deadline_by_the_rate_limiter_never_starts(self):
+        self.api.configure_read_retries(
+            RetryPolicy(max_retries=3, base_delay=0.05, jitter=0.0, sleep=self.sleep))
+        self.at(299.9)
+        self.script.extend([(0, reset_error()), (0, self.accepted()), (0, self.listed())])
+        with self.assertLogs("trading_bot", level="WARNING"), \
+                self.assertRaises(TradingUnavailable) as failed:
+            self.pending.poll(self.api)
+        self.assertEqual(failed.exception.reason, "connection_failed")
+        # 0.05 s backoff to 299.95 s, then the limiter's 0.06 s to 300.01 s: not sent.
+        self.assertEqual(self.sleeps, [0.05, 0.06])
+        self.assertEqual(len(self.reads), 1)
+        self.assert_still_pending_without_mutations()
+
+    def test_slow_read_returning_success_after_the_deadline_never_clears_the_order(self):
+        for case, steps, reads in (
+            ("confirmation", [(5, self.accepted()), (0, self.listed())],
+             [("/api/v1/confirms/o_reference", 299, 304)]),
+            ("positions", [(1, self.accepted()), (3, self.listed())],
+             [("/api/v1/confirms/o_reference", 298, 299), ("/api/v1/positions", 299, 302)]),
+        ):
+            with self.subTest(case):
+                self.setUp()
+                self.at(reads[0][1])
+                self.script.extend(steps)
+                with self.assertLogs("trading_bot", level="WARNING") as logs, \
+                        self.assertRaises(TradingUnavailable) as stopped:
+                    self.pending.poll(self.api)
+                self.assertEqual(stopped.exception.reason, "order_confirmation_unresolved")
+                self.assertTrue(stopped.exception.outcome_uncertain)
+                self.assertEqual(self.reads, reads)
+                self.assertIn("detail=confirmation_timeout", "\n".join(logs.output))
+                self.assert_still_pending_without_mutations()  # Success after 300 s does not count.
+
+                # Through recovery as well: a resolution finishing late does not resume.
+                self.setUp()
+                self.at(reads[0][1])
+                self.script.extend(steps)
+                with self.assertLogs("trading_bot", level="WARNING"), \
+                        self.assertRaises(TradingUnavailable) as stopped:
+                    self.pending.resolve(self.api)
+                self.assertEqual(stopped.exception.reason, "order_confirmation_unresolved")
+                self.assert_still_pending_without_mutations()
+
+    def test_no_confirmation_read_starts_after_the_deadline(self):
+        self.at(300.5)
+        with self.assertLogs("trading_bot", level="WARNING"), \
+                self.assertRaises(TradingUnavailable) as stopped:
+            self.pending.poll(self.api)
+        self.assertEqual(stopped.exception.reason, "order_confirmation_unresolved")
+        self.assertEqual(self.reads, [])
+        self.assert_still_pending_without_mutations()
+
+    def test_confirmation_and_positions_finishing_in_time_resume_trading(self):
+        self.at(295)
+        self.script.extend([(2, self.accepted()), (2, self.listed())])
+        with self.assertLogs("trading_bot", level="INFO") as logs:
+            self.assertTrue(self.pending.resolve(self.api))
+        self.assertEqual(self.reads, [("/api/v1/confirms/o_reference", 295, 297),
+                                      ("/api/v1/positions", 297, 299)])
+        self.assertEqual(len(self.pending), 0)
+        self.assertIn("Order confirmed operation=open", "\n".join(logs.output))
+        self.assertIsNone(self.pending.deadline())
+
+        # A retry that starts before the deadline and confirms in time also counts.
+        self.setUp()
+        self.at(296)
+        self.script.extend([(0, reset_error()), (1, self.accepted()), (0.5, self.listed())])
+        with self.assertLogs("trading_bot", level="INFO"):
+            self.assertIsNone(self.pending.poll(self.api))
+        self.assertEqual(self.reads, [("/api/v1/confirms/o_reference", 296, 296),
+                                      ("/api/v1/confirms/o_reference", 298, 299),
+                                      ("/api/v1/positions", 299, 299.5)])
+        self.assertEqual(len(self.pending), 0)
 
 
 def candle_rows(*starts):
@@ -1545,6 +1768,103 @@ class HmaRecoveryScenarioTests(unittest.TestCase):
         self.assertNotIn("reason=order_confirmation_pending", self.output)
         self.assertEqual(self.broker.count("post", "/api/v1/positions"), 1)
         self.assertNotIn("Trading stopped", self.output)
+
+    # --- Third review, 2: the deadline holds through retries in the real loop ---
+
+    def test_confirmation_retry_backing_off_to_the_deadline_is_never_started(self):
+        self.broker.lag = True
+
+        def network_drops_near_the_deadline(method, path):
+            if not path.startswith("/api/v1/confirms/"):
+                return
+            age = (self.clock.local() - self.ack_time()).total_seconds()
+            if 290 <= age < 300:
+                raise dns_error()
+            if age >= 300:  # Late: this read would take 4 s and confirm the order.
+                self.clock.elapsed += 4
+                self.broker.release()
+
+        self.broker.request_hook = network_drops_near_the_deadline
+        stopped = self.run_hma("--cycles", "3", expect=TradingUnavailable)
+        self.assertEqual(stopped.reason, "order_confirmation_unresolved")
+        self.assertTrue(stopped.outcome_uncertain)
+        acknowledged = self.ack_time()
+        confirms = self.broker.times("get", "/api/v1/confirms/o_private-marker-1")
+        # Polls every 10 s, then retries at 292 and 296 s; the backoff to 300 s ends there.
+        self.assertEqual([(t - acknowledged).total_seconds() for t in confirms],
+                         [*range(0, 291, 10), 292, 296])
+        self.assertEqual((self.clock.local() - acknowledged).total_seconds(), 300)  # Not 304 s.
+        self.assertEqual(self.broker.listed_positions(), [])  # Never released: not even read.
+        self.assertEqual(self.broker.count("post", "/api/v1/positions"), 1)
+        self.assertEqual(self.broker.count("post", "/api/v1/session"), 1)  # No recovery login.
+        self.assertEqual(self.executed(), [self.at(22, 0)])
+        self.assertIn("confirmation deadline reached before the retry started", self.output)
+        self.assertIn("detail=confirmation_timeout", self.output)
+        self.assertNotIn("Order confirmed", self.output)
+        self.assertNotIn("Scheduled trading resumed", self.output)
+
+    # --- Third review, 3: confirmations stay polled while the market is closed ---
+
+    @staticmethod
+    def utc_local(day, hour, minute, second=0):
+        """Naive local time for a UTC moment: market hours are UTC, the scheduler is local."""
+        moment = datetime(2026, 11, day, hour, minute, second, tzinfo=timezone.utc)
+        return moment.astimezone().replace(tzinfo=None)
+
+    def friday_close(self):
+        self.assertEqual(datetime(2026, 11, 20).weekday(), 4)  # Friday.
+        self.clock = FakeClock(self.utc_local(20, 21, 58, 30))
+        self.broker = Broker(self.clock)
+        self.broker.lag = True  # BUY acknowledged at 21:59:02 UTC, just before the close.
+
+    def strategy_traffic(self, start, end):
+        """Every request in [start, end) other than the read-only confirmation checks.
+
+        A confirmation check reads ``/confirms`` and, once confirmed, the position list.
+        """
+        return [(m, p) for m, p, t in self.broker.calls
+                if start <= t < end and not (m == "get" and (
+                    p.startswith("/api/v1/confirms/") or p == "/api/v1/positions"))]
+
+    def test_order_acknowledged_before_friday_close_stops_at_its_deadline_not_sunday(self):
+        self.friday_close()
+        stopped = self.run_hma("--time-frame", "MINUTE", "--days", "5", "--cycles", "5",
+                               expect=TradingUnavailable)
+        self.assertEqual(stopped.reason, "order_confirmation_unresolved")
+        self.assertTrue(stopped.outcome_uncertain)
+        acknowledged = self.ack_time()
+        self.assertEqual(acknowledged, self.utc_local(20, 21, 59, 2))
+        self.assertEqual((self.clock.local() - acknowledged).total_seconds(), 300)  # Friday 22:04:02.
+        confirms = self.broker.times("get", "/api/v1/confirms/o_private-marker-1")
+        self.assertEqual([(t - acknowledged).total_seconds() for t in confirms], list(range(0, 301, 10)))
+        closed = self.utc_local(20, 22, 0, 2)
+        self.assertTrue(any(t >= closed for t in confirms))  # Still polled after the close.
+        self.assertIn("Market closed. Waiting...", self.stdout)
+        # Read-only while closed: no strategy cycle, signal, session work or order.
+        self.assertEqual(self.strategy_traffic(closed, self.clock.local() + timedelta(1)), [])
+        self.assertEqual(self.executed(), [self.utc_local(20, 21, 59)])
+        self.assertEqual(self.broker.count("post", "/api/v1/positions"), 1)
+        self.assertIn("detail=confirmation_timeout", self.output)
+        self.assertIn("not tracked across a restart", self.output)
+
+    def test_order_confirmed_during_the_weekend_wait_lets_the_next_open_cycle_run(self):
+        self.friday_close()
+        self.broker.release_at = self.utc_local(20, 22, 2)  # Confirmed and listed after the close.
+        self.run_hma("--time-frame", "MINUTE", "--days", "5", "--cycles", "3")
+        confirms = self.broker.times("get", "/api/v1/confirms/o_private-marker-1")
+        self.assertEqual(max(confirms), self.utc_local(20, 22, 2, 2))  # Polling ended once confirmed.
+        self.assertIn("Order confirmed operation=open", self.output)
+        self.assertIn("Market is now OPEN!", self.stdout)
+        reopened = self.utc_local(22, 22, 0)  # Sunday 22:00 UTC.
+        self.assertEqual(self.strategy_traffic(self.utc_local(20, 22, 0, 2), reopened), [])
+        # Friday's 22:00 boundary is stale at reopening and is skipped; Sunday 22:01 runs.
+        self.assertIn("reason=stale_boundary stage=cycle_start", self.output)
+        self.assertEqual(self.executed(), [self.utc_local(20, 21, 59), self.utc_local(22, 22, 1)])
+        self.assertGreaterEqual(self.broker.count("get", "/api/v1/positions", reopened), 1)
+        self.assertEqual(self.broker.count("post", "/api/v1/positions"), 1)  # Already long: no second BUY.
+        self.assertNotIn("reason=order_confirmation_pending", self.output)
+        self.assertNotIn("Trading stopped", self.output)
+        self.assertNotIn("not tracked across a restart", self.output)
 
     # --- Acknowledgements and controlled exits (second review, 2) ---
 

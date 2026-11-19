@@ -185,6 +185,34 @@ class TradingApi(
             raise
         return True
 
+    def _read_retry_deadline_reached(self, reason, method, path):
+        """Whether a retry would start at or after the read-retry deadline.
+
+        Checked after the backoff sleep and after rate limiting, immediately before
+        the retry would reach the transport.
+        """
+        bound = getattr(self, "_read_retry_deadline", None)
+        if bound is None or time.monotonic() < bound:
+            return False
+        _LOGGER.error(
+            "API read retries stopped environment=%s method=%s endpoint=%s "
+            "exception_category=%s: confirmation deadline reached before the retry started",
+            self.environment.upper(), _method_label(method), endpoint_template(path), reason,
+        )
+        return True
+
+    def _live_send_checkpoint(self):
+        """Inside the LIVE gate: refuse a request whose strategy cycle has expired.
+
+        Raised before the transport is called, so the gate knows nothing was sent.
+        """
+        # Only a strategy gate has a cycle; the integration round-trip gate has none.
+        window_open = getattr(self._live_execution, "send_window_open", None)
+        if window_open is not None and window_open() is not True:
+            from trading_bot.api.rest import SendWindowClosed
+
+            raise SendWindowClosed()
+
     def _request(self, method, url, **kwargs):
         self._require_available()
         path = urlsplit(url).path
@@ -198,11 +226,12 @@ class TradingApi(
             or urlsplit(url).netloc != urlsplit(self.BASE_URL).netloc
         ):
             raise PermissionError("api_endpoint_environment_mismatch")
-        if (
+        gated_live = (
             self.environment == "live"
             and method.lower() != "get"
             and not (path == "/api/v1/session" and method.lower() == "post")
-        ):
+        )
+        if gated_live:
             if not (
                 self._live_send_depth
                 and (
@@ -221,6 +250,7 @@ class TradingApi(
         # request are sent once: an unknown mutation outcome is never resubmitted.
         policy = self._read_retry_policy if method.lower() == "get" else None
         retries = 0
+        last_reason = None
         while True:
             throttle(
                 self.X_CAP_API_KEY,
@@ -230,6 +260,12 @@ class TradingApi(
                 self._login_account_id,
                 user_identifier=self.IDENTIFIER,
             )
+            # Rate limiting can sleep. Deadlines are rechecked after it, immediately
+            # before the transport: nothing below this point is sent late.
+            if gated_live:
+                self._live_send_checkpoint()
+            if retries and self._read_retry_deadline_reached(last_reason, method, path):
+                self._stop(last_reason)
             request_started = time.monotonic()
             try:
                 res = getattr(requests, method)(url, **kwargs)
@@ -251,6 +287,7 @@ class TradingApi(
                 )
                 if self._wait_for_read_retry(policy, retries, reason, method, path):
                     retries += 1
+                    last_reason = reason
                     continue
                 self._stop(reason, mutation=mutation)
             if policy is not None and res.status_code in RETRYABLE_READ_STATUSES:
@@ -258,6 +295,7 @@ class TradingApi(
                     policy, retries, f"http_{res.status_code}", method, path
                 ):
                     retries += 1
+                    last_reason = f"http_{res.status_code}"
                     continue
             break
         from trading_bot.api.errors import broker_error_code
@@ -401,13 +439,31 @@ class TradingApi(
         # Otherwise, we are in the Friday night - Sunday evening gap
         return False
 
-    def wait_until_open(self, check_interval=60):
+    def wait_until_open(self, check_interval=60, *, poll=None):
         """
         Pauses execution until the market open conditions are met.
+
+        ``poll`` keeps running while the market is closed, with the same contract as in
+        ``wait_until_targets``: called at once, then again after the number of seconds
+        it returns, until it returns None. It must perform read-only checks only; its
+        failures propagate to the caller. The market is still checked every
+        ``check_interval`` seconds.
         """
+        next_poll = time.monotonic() if poll is not None else None
         while not self.is_market_open():
             print(f"[{datetime.now(timezone.utc)}] Market closed. Waiting...")
-            time.sleep(check_interval)
+            if poll is None:
+                time.sleep(check_interval)
+                continue
+            wake = time.monotonic() + check_interval
+            while next_poll is not None and next_poll < wake:
+                now = time.monotonic()
+                if now >= next_poll:
+                    pause = poll()  # Read-only; never evaluates a strategy or sends an order.
+                    next_poll = None if pause is None else time.monotonic() + max(0.0, pause)
+                    continue
+                time.sleep(next_poll - now)
+            time.sleep(max(0.0, wake - time.monotonic()))
 
         print("Market is now OPEN!")
 

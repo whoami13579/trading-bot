@@ -734,5 +734,186 @@ class LiveExecutionTests(unittest.TestCase):
         self.assertFalse(json.loads(self.gate.path.read_text())["pending"])
 
 
+    # --- --max-signal-delay rechecked after rate limiting (third review, 1) ---
+
+    def real_wire(self):
+        """The real client request path and rate limiter against a mocked LIVE transport.
+
+        One fake clock drives wall time (the cycle deadline), monotonic time (the
+        limiter) and every sleep. Only working-order and owned-position reads, and the
+        order itself, go over the mocked wire; the other gate reads stay mocked.
+        """
+        from collections import defaultdict
+        from urllib.parse import urlsplit
+        from trading_bot.api import rate_limits
+
+        del self.api._request  # Restore TradingApi._request in place of the mock.
+        del self.api.getAllWorkingOrders, self.api.getsinglePosition
+        self.stack.enter_context(patch.object(
+            rate_limits, "_STATE", defaultdict(rate_limits._STATE.default_factory)))
+        self.boundary = datetime(2026, 11, 17, 22, 0, tzinfo=timezone.utc)
+        self.now, self.mono, self.sleeps, self.wire = [self.boundary], [5000.0], [], []
+
+        def sleep(seconds):
+            self.sleeps.append(seconds)
+            self.now[0] += timedelta(seconds=seconds)
+            self.mono[0] += seconds
+
+        def reply(value):
+            response = requests.Response()
+            response.status_code = 200
+            response._content = json.dumps(value).encode()
+            return response
+
+        def transport(method):
+            def send(url, **kwargs):
+                path = urlsplit(url).path
+                self.assertTrue(url.startswith(execution.LIVE_URL + "/api/v1/"))
+                self.wire.append((method, path, self.elapsed()))
+                if method == "get" and path == "/api/v1/workingorders":
+                    return reply({"workingOrders": self.working})
+                if method == "get" and path.startswith("/api/v1/positions/"):
+                    deal = path.rsplit("/", 1)[1]
+                    return reply(next(p for p in self.positions if p["position"]["dealId"] == deal))
+                # A request that reaches the transport has its durable intent first.
+                self.assertTrue(json.loads(self.gate.path.read_text())["pending"])
+                return reply(self.fake_mutation(method, url, **kwargs).json())
+            return send
+
+        self.stack.enter_context(patch("time.sleep", side_effect=sleep))
+        self.stack.enter_context(patch("time.monotonic", side_effect=lambda: self.mono[0]))
+        for method in ("get", "post", "delete"):
+            self.stack.enter_context(patch(f"trading_bot.api.client.requests.{method}",
+                                           side_effect=transport(method)))
+
+    def elapsed(self):
+        return round((self.now[0] - self.boundary).total_seconds(), 3)
+
+    def idle(self, seconds):
+        """Time passes without any request, so the limiter has nothing left to wait for."""
+        self.now[0] += timedelta(seconds=seconds)
+        self.mono[0] += seconds
+
+    def bind_recorded_cycle(self, seconds_after_boundary):
+        from trading_bot.utils.network_recovery import CycleGuard
+
+        self.now[0] = self.boundary + timedelta(seconds=seconds_after_boundary)
+        guard = CycleGuard(1800, 120, clock=lambda: self.now[0])
+        self.assertTrue(guard.start(self.boundary))
+        self.window_checks = []
+
+        def fresh():
+            current = guard.fresh("live_send")
+            self.window_checks.append((self.elapsed(), current))
+            return current
+        self.gate.bind_cycle(fresh)
+
+    def orders_sent(self):
+        return [(m, p, t) for m, p, t in self.wire if m in ("post", "delete")]
+
+    def test_open_expiring_while_rate_limited_is_never_sent_and_is_rolled_back(self):
+        self.real_wire()
+        self.gate.arm()
+        self.idle(1)
+        self.bind_recorded_cycle(119.95)
+        self.record_intent_writes()
+        with self.assertLogs("trading_bot", level="WARNING") as logs:
+            self.assertEqual(self.api.createPosition("EURUSD", "BUY", 100), (None, None))
+        # The gate's checks passed at 119.95 s; the limiter then slept 0.11 s, after the
+        # working-order read, and the request would have reached the wire at 120.06 s.
+        self.assertEqual(self.wire[-1], ("get", "/api/v1/workingorders", 119.95))
+        self.assertEqual(self.sleeps[-1], 0.11)
+        self.assertEqual(self.window_checks, [(119.95, True), (119.95, True), (120.06, False)])
+        self.assertEqual(self.orders_sent(), [])  # Zero POST.
+        self.assertEqual(self.intents, [True, False])  # Intent written, then withdrawn unsent.
+        self.assert_nothing_sent_or_reserved()
+        self.assertFalse(self.api._mutation_outcome_uncertain)
+        self.assertIn("reason=stale_boundary stage=live_send", "\n".join(logs.output))
+
+    def test_close_expiring_while_rate_limited_is_never_sent_and_is_rolled_back(self):
+        self.real_wire()
+        self.gate.arm()
+        self.api.createPosition("EURUSD", "BUY", 100)  # Outside any cycle: an owned position.
+        self.assertEqual(list(self.gate.owned), ["owned"])
+        opened, charges = self.gate.open_count, self.gate.charges
+        self.idle(1)
+        self.bind_recorded_cycle(119.95)
+        self.record_intent_writes()
+        with self.assertLogs("trading_bot", level="WARNING"):
+            self.assertEqual(self.api.closePosition("owned"), (None, None))
+        self.assertEqual(self.wire[-1], ("get", "/api/v1/positions/owned", 119.95))
+        self.assertEqual(self.window_checks, [(119.95, True), (119.95, True), (120.06, False)])
+        self.assertEqual([m for m, _, _ in self.orders_sent()], ["post"])  # Zero DELETE.
+        self.assertEqual(self.intents, [True, False])
+        self.assertIn("owned", self.gate.owned)
+        self.assert_nothing_sent_or_reserved(opened, charges)
+
+    def test_fresh_orders_reach_the_wire_after_rate_limiting_with_intent_first(self):
+        self.real_wire()
+        self.gate.arm()
+        self.idle(1)
+        self.bind_recorded_cycle(100)
+        self.assertEqual(self.api.createPosition("EURUSD", "BUY", 100), ({"dealReference": "open-ref"}, 200))
+        self.assertEqual(self.orders_sent(), [("post", "/api/v1/positions", 100.11)])
+        self.assertEqual(self.window_checks[-1], (100.11, True))
+        self.assertEqual(list(self.gate.owned), ["owned"])
+        self.assertEqual(self.gate.open_count, 1)
+        self.assertGreater(self.gate.charges, 0)
+        self.idle(1)
+        self.bind_recorded_cycle(110)
+        self.assertEqual(self.api.closePosition("owned")[1], 200)
+        self.assertEqual(self.orders_sent()[-1], ("delete", "/api/v1/positions/owned", 110.11))
+        self.assertEqual(self.gate.owned, {})
+        self.assertFalse(json.loads(self.gate.path.read_text())["pending"])
+        self.assertTrue(self.gate.armed and not self.gate.failed)
+
+    def run_limited_hma(self, signal, seconds_after_boundary):
+        """The real HMA loop, LIVE gate, client request path and rate limiter."""
+        from trading_bot.strategies import hma
+
+        self.now[0] = self.boundary + timedelta(seconds=seconds_after_boundary)
+        self.api.prepare_trading_cycle = Mock(return_value=False)
+        with patch("sys.argv", ["hma.py", "--REAL", "--cycles", "1", "--max-signal-delay", "120"]), \
+                patch.object(hma, "create_trading_api", return_value=self.api), \
+                patch.object(hma, "wait_until_targets", return_value=self.boundary), \
+                patch.object(hma, "calculate_hma_result", return_value=signal), \
+                patch("trading_bot.utils.network_recovery._utc_now", side_effect=lambda: self.now[0]), \
+                redirect_stdout(io.StringIO()), \
+                self.assertLogs("trading_bot", level="INFO") as logs:
+            logging.getLogger("trading_bot.tests").info("live scenario start")
+            hma.main()
+        return "\n".join(logs.output)
+
+    def test_hma_live_order_delayed_past_the_cutoff_by_the_limiter_is_not_sent(self):
+        self.real_wire()
+        self.gate.arm()
+        self.idle(1)
+        output = self.run_limited_hma("BUY", 119.95)
+        self.assertEqual(self.orders_sent(), [])  # Zero POST: it would have left at 120.06 s.
+        self.assertEqual(self.elapsed(), 120.06)
+        self.assertIn("reason=stale_boundary stage=live_send", output)
+        self.assert_nothing_sent_or_reserved()
+
+        self.gate.bind_cycle(None)  # Outside any strategy cycle: set up an owned position.
+        self.api.createPosition("EURUSD", "BUY", 100)
+        opened, charges = self.gate.open_count, self.gate.charges
+        self.idle(1)
+        self.boundary += timedelta(minutes=30)
+        output = self.run_limited_hma("SELL", 119.95)
+        self.assertEqual([m for m, _, _ in self.orders_sent()], ["post"])  # Zero DELETE.
+        self.assertIn("reason=stale_boundary stage=live_send", output)
+        self.assertIn("owned", self.gate.owned)
+        self.assert_nothing_sent_or_reserved(opened, charges)
+
+    def test_hma_live_order_within_the_cutoff_after_rate_limiting_is_sent(self):
+        self.real_wire()
+        self.gate.arm()
+        self.idle(1)
+        self.run_limited_hma("BUY", 119.85)  # 119.96 s once the limiter has slept.
+        self.assertEqual(self.orders_sent(), [("post", "/api/v1/positions", 119.96)])
+        self.assertEqual(list(self.gate.owned), ["owned"])
+        self.assertFalse(json.loads(self.gate.path.read_text())["pending"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -13,6 +13,7 @@ from trading_bot.risk.live_risk import (IntegrationError, check_limits, dec, fin
                                require, risk_estimate)
 from trading_bot.risk.strategy_costs import strategy_costs
 from trading_bot.config.trading_config import ROOT, LIVE_URL
+from trading_bot.api.rest import SendWindowClosed
 
 
 class LiveSafetyStop(SystemExit):
@@ -54,6 +55,19 @@ class LiveExecution:
 
     def _cycle_expired(self):
         return self.send_window is not None and self.send_window() is not True
+
+    def send_window_open(self):
+        """Checked by the client after rate limiting, immediately before the HTTP request."""
+        return not self._cycle_expired()
+
+    def _withdraw(self, operation, cost):
+        """Roll back an intent whose request never reached the transport."""
+        self.pending = False
+        if operation == "open":
+            self.open_count -= 1
+            self.charges -= cost
+        self._save()
+        return None, None
 
     def _positions(self):
         payload, status = self.api.getAllPositions()
@@ -214,6 +228,7 @@ class LiveExecution:
             else:
                 require(operation == "close" and deal_id in self.owned, "live_cannot_close_unrelated_position")
                 self._verify_owned(deal_id, verify_stop=False)
+                cost = None
             # The broker reads above take time: a cycle that expired meanwhile sends nothing,
             # writes no intent and consumes no opening-order or charge allowance.
             if self._cycle_expired():
@@ -224,14 +239,14 @@ class LiveExecution:
             # Persist intent BEFORE the only mutation request. Every failure locks out retries.
             self.pending = True
             self._save()
-            if self._cycle_expired():  # Rechecked after the durable write, just before sending.
-                self.pending = False
-                if operation == "open":
-                    self.open_count -= 1
-                    self.charges -= cost
-                self._save()
-                return None, None
-            result, status = send()
+            if self._cycle_expired():  # Rechecked after the durable write.
+                return self._withdraw(operation, cost)
+            try:
+                # The client checks the window once more after rate limiting, immediately
+                # before the HTTP request; a refusal there means nothing was sent.
+                result, status = send()
+            except SendWindowClosed:
+                return self._withdraw(operation, cost)
             require(status == 200 and isinstance(result, dict), "live_submission_outcome_uncertain_no_retry")
             confirmation = self._confirm(result.get("dealReference"))
             if operation == "open":

@@ -270,7 +270,9 @@ class PendingOrders:
 
     Every entry has a monotonic deadline ``timeout`` seconds after its acknowledgement,
     enforced independently of the candle schedule: ``poll`` runs during the scheduler
-    wait, and the wait, read retries and outage pauses are all bounded by it.
+    wait and the market-closed wait, and the waits, read retries and outage pauses are
+    all bounded by it. No read retry starts at or after the deadline, and a check that
+    finishes after it never clears an order: trading stops instead.
     """
 
     def __init__(self, symbol, *, enabled=True, timeout=300.0, poll_interval=10.0,
@@ -337,11 +339,21 @@ class PendingOrders:
             self._fail("order_confirmation_mismatch", entry, "confirmation_differs_from_order")
         return affected[0]["dealId"]
 
-    def _reconciled(self, api, entry, positions):
+    def _require_in_time(self, deadline, entry):
+        """A read that starts or finishes after the deadline never clears an order.
+
+        A check exactly on the deadline still counts; anything later stops trading
+        for manual reconciliation, however the read turned out.
+        """
+        if self.monotonic() > deadline:
+            self._fail("order_confirmation_unresolved", entry, "confirmation_timeout")
+
+    def _reconciled(self, api, entry, positions, deadline):
         """True when confirmed and reflected in positions; False while still pending."""
         if entry["reference"] is None:
             self._fail("order_confirmation_mismatch", entry, "missing_deal_reference")
         confirmation = api.getPositionOrderConfirmation(entry["reference"])
+        self._require_in_time(deadline, entry)
         if confirmation is None:
             return False  # HTTP 404: the broker has not published the confirmation yet.
         if not isinstance(confirmation, dict):
@@ -353,6 +365,7 @@ class PendingOrders:
             self._fail("order_confirmation_mismatch", entry, "confirmation_not_accepted")
         if not positions:
             positions.append(broker_positions(api))
+            self._require_in_time(deadline, entry)
         rows = positions[0]
         if entry["operation"] == "open":
             deal_id = self._opened_deal(confirmation, entry)
@@ -389,9 +402,12 @@ class PendingOrders:
         """One read-only pass; drops every entry that is confirmed and reconciled."""
         positions = []  # Fetched at most once per pass, only after a confirmation.
         remaining = []
+        # Fixed for the whole pass: the earliest acknowledgement's deadline.
+        deadline = self.deadline()
         with self.bounded_reads(api):
             for entry in self.entries:
-                if self._reconciled(api, entry, positions):
+                self._require_in_time(deadline, entry)  # No read starts after it.
+                if self._reconciled(api, entry, positions, deadline):
                     _LOGGER.info(
                         "Order confirmed operation=%s; broker positions reflect it", entry["operation"]
                     )
