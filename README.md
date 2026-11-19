@@ -128,6 +128,7 @@ and [the unified framework, compatibility notes and strategy integration guide](
 - [Unified backtesting framework](docs/backtesting-framework.md)
 - [Configuration and environment selection](docs/configuration.md)
 - [Trading safeguards and execution commands](docs/trading-safety.md)
+- [Network retries, pause and recovery](docs/network-recovery.md)
 - [Offline tests, read-only checks and order-capable integration tools](docs/integration-testing.md)
 - [Migration, compatibility and backtest corrections](docs/refactoring.md)
 
@@ -143,3 +144,4 @@ mutation categories remain blocked pending dedicated risk policies; existing
 LIVE open/close controls are preserved. `test.py` remains unchanged.
 
 For scheduler-related HTTP 401 failures, see [session renewal and HMA read-only diagnostics](docs/session-lifecycle.md).
+For DNS/connection outages during scheduled trading, see [network recovery](docs/network-recovery.md).

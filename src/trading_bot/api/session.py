@@ -132,6 +132,46 @@ class SessionAPI:
         finally:
             self._preparing_cycle = False
 
+    def recovered_client(self):
+        """Build a new DEMO client after a network outage stopped this one.
+
+        This client's fail-closed latch is never cleared. The replacement has its own
+        empty tokens and must pass a public connectivity probe, one login on the same
+        host, account discovery and the original pinned account before it is returned.
+        It is refused after any uncertain order outcome and for LIVE, where a new
+        session always requires the full LIVE preflight and an operator restart.
+        """
+        from trading_bot.api.network_errors import TradingUnavailable
+
+        if self._mutation_outcome_uncertain:
+            raise TradingUnavailable(self._unavailable or "request_interrupted", mutation=True)
+        if self.environment != "demo" or self._live_execution is not None:
+            raise PermissionError("live_recovery_requires_operator_restart_and_preflight")
+        expected = self._cycle_identity
+        if expected is None or expected[:2] != (self.environment, self.BASE_URL):
+            raise TradingUnavailable("session_identity_not_pinned")
+        client = type(self)(
+            self.X_CAP_API_KEY,
+            self.IDENTIFIER,
+            self.PASSWORD,
+            environment=self.environment,
+            account=self._account_selection,
+            auto_authenticate=False,
+        )
+        client.getServerTime()  # Public, single-attempt connectivity probe; no credentials.
+        if client.createNewSession() is None:
+            client._require_available()
+            client._stop("authentication_unavailable")
+        try:
+            account = client.verify_account_environment()
+        except (RuntimeError, KeyError, TypeError, ValueError, AttributeError):
+            client._stop("session_identity_changed")
+        if account.get("accountId") != expected[2]:
+            client._stop("session_identity_changed")  # Never switch accounts back.
+        client.pin_session_identity(account)
+        client.configure_read_retries(self._read_retry_policy)
+        return client
+
     def getCstAndXSecurityToken(self) -> tuple[str, str] | None:
         if self.createNewSession() is not None:
             return self.cst, self.x_security_token

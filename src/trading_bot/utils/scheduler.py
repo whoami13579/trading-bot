@@ -1,14 +1,26 @@
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections.abc import Callable
 
 SCHEDULE_TIMEFRAMES = ("MINUTE", "MINUTE_5", "MINUTE_15", "MINUTE_30")
 
 
 def wait_until_targets(
-    target_minutes, *, keepalive: Callable[[], object] | None = None
+    target_minutes,
+    *,
+    keepalive: Callable[[], object] | None = None,
+    poll: Callable[[], float | None] | None = None,
 ):
-    """Wait for the candle boundary; optionally validate a session every five minutes."""
+    """Wait for the next candle boundary and return it as an aware UTC datetime.
+
+    Only future boundaries are scheduled, so boundaries missed while the caller was
+    paused are skipped rather than replayed. Optionally validate a session every
+    five minutes during the wait.
+
+    ``poll`` is called as soon as the wait starts, then again after the number of
+    seconds it returns, until it returns None. It must perform read-only checks only;
+    it never runs a strategy evaluation, and its failures propagate to the caller.
+    """
     if (
         not isinstance(target_minutes, (list, tuple))
         or not target_minutes
@@ -44,14 +56,34 @@ def wait_until_targets(
         f"Next run at:  {target_time.strftime('%H:%M:%S')} (In {round(delay, 2)} seconds)"
     )
 
-    if keepalive is None:
+    boundary = target_time.astimezone(timezone.utc)
+    if keepalive is None and poll is None:
         time.sleep(delay)
-        return
-    deadline = time.monotonic() + delay
-    while (remaining := deadline - time.monotonic()) > 0:
-        time.sleep(min(remaining, 300))
-        if time.monotonic() < deadline:
-            keepalive()  # Read-only session/account validation; failures propagate and stop.
+        return boundary
+    started = time.monotonic()
+    deadline = started + delay
+    next_keepalive = started + 300 if keepalive is not None else None
+    next_poll = started if poll is not None else None
+    while True:
+        now = time.monotonic()
+        if now >= deadline:
+            return boundary
+        if next_poll is not None and now >= next_poll:
+            pause = poll()  # Read-only; never evaluates the strategy between boundaries.
+            next_poll = None if pause is None else time.monotonic() + max(0.0, pause)
+            continue
+        wake = min(t for t in (deadline, next_keepalive, next_poll) if t is not None)
+        time.sleep(max(0.0, wake - now))
+        if next_keepalive is not None and next_keepalive <= (now := time.monotonic()) < deadline:
+            keepalive()  # Read-only session/account validation; failures propagate to the caller.
+            next_keepalive = time.monotonic() + 300
+
+
+def schedule_interval_seconds(target_minutes) -> int:
+    """Seconds between consecutive boundaries of an evenly spaced minute schedule."""
+    if len(target_minutes) < 2:
+        return 3600
+    return (target_minutes[1] - target_minutes[0]) * 60
 
 
 def timeframe_to_minutes(timeframe: str) -> list[int]:

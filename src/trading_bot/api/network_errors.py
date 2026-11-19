@@ -70,6 +70,8 @@ MESSAGES = {
     "authentication_unavailable": "An authenticated API session is required.",
     "account_verification_failed": "The active account could not be verified after an explicit switch.",
     "invalid_api_response": "The API returned an invalid response.",
+    "order_confirmation_unresolved": "A submitted order was acknowledged but its broker confirmation and positions did not resolve in time.",
+    "order_confirmation_mismatch": "A submitted order's broker confirmation was rejected, malformed or inconsistent with positions.",
 }
 
 

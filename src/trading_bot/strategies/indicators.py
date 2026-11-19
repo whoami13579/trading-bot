@@ -127,9 +127,19 @@ def hma_signal(prices: list[float], hma_period: int) -> str:
     return "BUY" if hma_values[-2] < hma_values[-1] else "SELL"
 
 
-def calculate_hma_result(tradingApi: TradingApi, symbol: str, time_frame: str, hma_period: int)->str:
-    prices = tradingApi.getHistoricalPricesList(symbol, time_frame, hma_period * 3)
-    return hma_signal(prices, hma_period)
+def calculate_hma_result(tradingApi: TradingApi, symbol: str, time_frame: str, hma_period: int,
+                         completed_by=None) -> str | None:
+    """HMA slope signal. With ``completed_by`` (a UTC cycle boundary), only candles
+    completed by then are used, and None is returned when the candle expected for that
+    boundary is missing, so the caller skips the cycle."""
+    if completed_by is None:
+        prices = tradingApi.getHistoricalPricesList(symbol, time_frame, hma_period * 3)
+        return hma_signal(prices, hma_period)
+    from trading_bot.utils.candles import completed_closes
+
+    history, _ = tradingApi.getHistoricalPrices(symbol, time_frame, hma_period * 3)
+    prices = completed_closes(history, time_frame, completed_by)
+    return None if prices is None else hma_signal(prices, hma_period)
 
 
 def calculate_two_ema_result(tradingApi: TradingApi, symbol: str, time_frame: str, long_period: int, short_period: int)->str:

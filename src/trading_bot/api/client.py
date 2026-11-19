@@ -1,4 +1,5 @@
 import requests
+from contextlib import contextmanager
 import logging
 from datetime import datetime, timezone
 import time
@@ -10,6 +11,7 @@ from trading_bot.api.network_errors import (
     endpoint_template,
     network_failure_reason,
 )
+from trading_bot.api.retry import RETRYABLE_READ_STATUSES, RetryPolicy, is_transient
 from urllib.parse import urlsplit
 
 from trading_bot.api.rest import RestComponent
@@ -21,6 +23,11 @@ from trading_bot.api.watchlists import WatchlistsAPI
 from trading_bot.api.working_orders import WorkingOrdersAPI
 
 _LOGGER = logging.getLogger(__name__)
+_HTTP_METHODS = frozenset({"get", "post", "put", "delete", "patch", "head", "options"})
+
+
+def _method_label(method):
+    return method.upper() if method.lower() in _HTTP_METHODS else "UNKNOWN"
 
 
 class TradingApi(
@@ -66,6 +73,8 @@ class TradingApi(
         self._cycle_identity: tuple[str, str, str] | None = None
         self._preparing_cycle = False
         self._last_cycle_ping: dict | None = None
+        self._read_retry_policy = None  # Opt-in; GET requests only.
+        self._read_retry_deadline = None  # Optional monotonic bound on retry backoff.
         supplied = (x_cap_api_key, identifier, password)
         if all(value is None for value in supplied):
             values = load_credentials()
@@ -116,6 +125,94 @@ class TradingApi(
                 self._unavailable, mutation=self._mutation_outcome_uncertain
             ) from None
 
+    def configure_read_retries(self, policy: RetryPolicy | None) -> None:
+        """Enable bounded retries for read-only GETs; ``None`` restores single attempts.
+
+        This never affects login, logout or trade-changing requests.
+        """
+        if policy is not None and not isinstance(policy, RetryPolicy):
+            raise TypeError("retry_policy_required")
+        self._read_retry_policy = policy
+
+    @contextmanager
+    def read_retry_deadline(self, deadline):
+        """Within this block, read-retry backoff never extends past ``deadline``.
+
+        ``deadline`` is a ``time.monotonic()`` value. A retry that would start at or
+        after it is not attempted, and the read fails with its network reason.
+        """
+        previous = getattr(self, "_read_retry_deadline", None)
+        self._read_retry_deadline = deadline
+        try:
+            yield
+        finally:
+            self._read_retry_deadline = previous
+
+    def _wait_for_read_retry(self, policy, retries, reason, method, path):
+        """Sleep before another GET attempt; False when the request must stop now."""
+        if policy is None or method.lower() != "get" or not is_transient(reason):
+            return False
+        labels = (self.environment.upper(), _method_label(method), endpoint_template(path))
+        if retries >= policy.max_retries:
+            if policy.max_retries:
+                _LOGGER.error(
+                    "API read retries exhausted environment=%s method=%s endpoint=%s "
+                    "exception_category=%s attempts=%d",
+                    *labels, reason, retries + 1,
+                )
+            return False
+        delay = policy.delay(retries + 1)
+        bound = getattr(self, "_read_retry_deadline", None)
+        if bound is not None:
+            remaining = bound - time.monotonic()
+            if remaining <= 0:
+                _LOGGER.error(
+                    "API read retries stopped environment=%s method=%s endpoint=%s "
+                    "exception_category=%s attempts=%d: confirmation deadline reached",
+                    *labels, reason, retries + 1,
+                )
+                return False
+            delay = min(delay, remaining)
+        _LOGGER.warning(
+            "API read retry scheduled environment=%s method=%s endpoint=%s "
+            "exception_category=%s retry=%d max_retries=%d delay_seconds=%.2f",
+            *labels, reason, retries + 1, policy.max_retries, delay,
+        )
+        try:
+            policy.wait(delay)
+        except KeyboardInterrupt:
+            self._invalidate_session("request_interrupted")
+            raise
+        return True
+
+    def _read_retry_deadline_reached(self, reason, method, path):
+        """Whether a retry would start at or after the read-retry deadline.
+
+        Checked after the backoff sleep and after rate limiting, immediately before
+        the retry would reach the transport.
+        """
+        bound = getattr(self, "_read_retry_deadline", None)
+        if bound is None or time.monotonic() < bound:
+            return False
+        _LOGGER.error(
+            "API read retries stopped environment=%s method=%s endpoint=%s "
+            "exception_category=%s: confirmation deadline reached before the retry started",
+            self.environment.upper(), _method_label(method), endpoint_template(path), reason,
+        )
+        return True
+
+    def _live_send_checkpoint(self):
+        """Inside the LIVE gate: refuse a request whose strategy cycle has expired.
+
+        Raised before the transport is called, so the gate knows nothing was sent.
+        """
+        # Only a strategy gate has a cycle; the integration round-trip gate has none.
+        window_open = getattr(self._live_execution, "send_window_open", None)
+        if window_open is not None and window_open() is not True:
+            from trading_bot.api.rest import SendWindowClosed
+
+            raise SendWindowClosed()
+
     def _request(self, method, url, **kwargs):
         self._require_available()
         path = urlsplit(url).path
@@ -129,11 +226,12 @@ class TradingApi(
             or urlsplit(url).netloc != urlsplit(self.BASE_URL).netloc
         ):
             raise PermissionError("api_endpoint_environment_mismatch")
-        if (
+        gated_live = (
             self.environment == "live"
             and method.lower() != "get"
             and not (path == "/api/v1/session" and method.lower() == "post")
-        ):
+        )
+        if gated_live:
             if not (
                 self._live_send_depth
                 and (
@@ -147,37 +245,59 @@ class TradingApi(
                 raise PermissionError("live_mutation_outside_execution_gate")
         from trading_bot.api.rate_limits import throttle
 
-        throttle(
-            self.X_CAP_API_KEY,
-            self.environment,
-            method.lower(),
-            path,
-            self._login_account_id,
-            user_identifier=self.IDENTIFIER,
-        )
         kwargs.update(timeout=REQUEST_TIMEOUT, allow_redirects=False, verify=True)
-        request_started = time.monotonic()
-        try:
-            res = getattr(requests, method)(url, **kwargs)
-        except KeyboardInterrupt:
-            self._mutation_outcome_uncertain |= mutation
-            self._invalidate_session("request_interrupted")
-            raise
-        except (requests.exceptions.RequestException, OSError) as exc:
-            reason = network_failure_reason(exc)
-            _LOGGER.warning(
-                "API transport failure timestamp=%s environment=%s method=%s "
-                "endpoint=%s elapsed_seconds=%.3f exception_category=%s",
-                datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
-                self.environment.upper(),
-                method.upper() if method.lower() in {
-                    "get", "post", "put", "delete", "patch", "head", "options"
-                } else "UNKNOWN",
-                endpoint_template(path),
-                time.monotonic() - request_started,
-                reason,
+        # Only a read-only GET may be retried. Login, logout and every trade-changing
+        # request are sent once: an unknown mutation outcome is never resubmitted.
+        policy = self._read_retry_policy if method.lower() == "get" else None
+        retries = 0
+        last_reason = None
+        while True:
+            throttle(
+                self.X_CAP_API_KEY,
+                self.environment,
+                method.lower(),
+                path,
+                self._login_account_id,
+                user_identifier=self.IDENTIFIER,
             )
-            self._stop(reason, mutation=mutation)
+            # Rate limiting can sleep. Deadlines are rechecked after it, immediately
+            # before the transport: nothing below this point is sent late.
+            if gated_live:
+                self._live_send_checkpoint()
+            if retries and self._read_retry_deadline_reached(last_reason, method, path):
+                self._stop(last_reason)
+            request_started = time.monotonic()
+            try:
+                res = getattr(requests, method)(url, **kwargs)
+            except KeyboardInterrupt:
+                self._mutation_outcome_uncertain |= mutation
+                self._invalidate_session("request_interrupted")
+                raise
+            except (requests.exceptions.RequestException, OSError) as exc:
+                reason = network_failure_reason(exc)
+                _LOGGER.warning(
+                    "API transport failure timestamp=%s environment=%s method=%s "
+                    "endpoint=%s elapsed_seconds=%.3f exception_category=%s",
+                    datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+                    self.environment.upper(),
+                    _method_label(method),
+                    endpoint_template(path),
+                    time.monotonic() - request_started,
+                    reason,
+                )
+                if self._wait_for_read_retry(policy, retries, reason, method, path):
+                    retries += 1
+                    last_reason = reason
+                    continue
+                self._stop(reason, mutation=mutation)
+            if policy is not None and res.status_code in RETRYABLE_READ_STATUSES:
+                if self._wait_for_read_retry(
+                    policy, retries, f"http_{res.status_code}", method, path
+                ):
+                    retries += 1
+                    last_reason = f"http_{res.status_code}"
+                    continue
+            break
         from trading_bot.api.errors import broker_error_code
 
         error_code = broker_error_code(res) if res.status_code >= 300 else None
@@ -319,13 +439,31 @@ class TradingApi(
         # Otherwise, we are in the Friday night - Sunday evening gap
         return False
 
-    def wait_until_open(self, check_interval=60):
+    def wait_until_open(self, check_interval=60, *, poll=None):
         """
         Pauses execution until the market open conditions are met.
+
+        ``poll`` keeps running while the market is closed, with the same contract as in
+        ``wait_until_targets``: called at once, then again after the number of seconds
+        it returns, until it returns None. It must perform read-only checks only; its
+        failures propagate to the caller. The market is still checked every
+        ``check_interval`` seconds.
         """
+        next_poll = time.monotonic() if poll is not None else None
         while not self.is_market_open():
             print(f"[{datetime.now(timezone.utc)}] Market closed. Waiting...")
-            time.sleep(check_interval)
+            if poll is None:
+                time.sleep(check_interval)
+                continue
+            wake = time.monotonic() + check_interval
+            while next_poll is not None and next_poll < wake:
+                now = time.monotonic()
+                if now >= next_poll:
+                    pause = poll()  # Read-only; never evaluates a strategy or sends an order.
+                    next_poll = None if pause is None else time.monotonic() + max(0.0, pause)
+                    continue
+                time.sleep(next_poll - now)
+            time.sleep(max(0.0, wake - time.monotonic()))
 
         print("Market is now OPEN!")
 

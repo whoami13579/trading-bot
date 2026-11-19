@@ -5,6 +5,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+class SendWindowClosed(Exception):
+    """A gated LIVE request was refused before reaching the transport: nothing was sent."""
+
+
 @dataclass(frozen=True, repr=False)
 class MutationAuthorization:
     """Explicit intent bound to one client, session, account and impact category."""
