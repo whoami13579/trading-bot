@@ -93,9 +93,13 @@ DEMO pauses and resumes after re-authentication and broker reconciliation. Trade
 requests are never retried. An uncertain order outcome stops the bot for manual
 reconciliation, and LIVE never resumes automatically. A DEMO order acknowledged with HTTP
 200 blocks further strategy orders until the broker confirms it and the position list
-reflects it. This holds across reconnection but not across a process restart. Signals use
-only the completed candle expected for each boundary. See
-[network recovery](network-recovery.md).
+reflects it. The confirmation is polled between boundaries, and trading stops for manual
+reconciliation if the order is unresolved 300 seconds after it was acknowledged. This
+holds across reconnection but not across a process restart. Every exit with such an order
+warns to reconcile before restarting. Signals use only the completed candle expected for
+each boundary. In HMA, the LIVE gate rechecks `--max-signal-delay` after its broker reads,
+immediately before sending. An expired cycle sends nothing, leaves no pending intent and
+uses no order or charge allowance. See [network recovery](network-recovery.md).
 
 Ctrl+C stops the process without liquidating positions. In HMA, Ctrl+C or SIGTERM during
 an order request is deferred until that request returns. Broker stops remain in

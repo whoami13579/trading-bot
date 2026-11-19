@@ -27,4 +27,6 @@ MAX_OUTAGE = 0.0  # Seconds paused before giving up; 0 waits indefinitely.
 MAX_SIGNAL_DELAY = 120.0  # Skip a cycle whose boundary is older than this, in seconds.
 # DEMO: an acknowledged order must be confirmed and visible in positions within this many
 # seconds; until then no strategy order is sent, afterwards trading stops for manual review.
+# The deadline is monotonic and independent of the candle schedule.
 ORDER_CONFIRMATION_TIMEOUT = 300.0
+ORDER_CONFIRMATION_POLL_INTERVAL = 10.0  # Seconds between read-only checks while waiting.

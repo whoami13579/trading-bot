@@ -1,10 +1,11 @@
 import argparse
 from contextlib import ExitStack, redirect_stdout
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import importlib
 import io
 import json
+import logging
 from pathlib import Path
 import runpy
 import tempfile
@@ -591,6 +592,146 @@ class LiveExecutionTests(unittest.TestCase):
 
     def test_live_stop_exits_legacy_catch_exception_loops(self):
         self.assertFalse(issubclass(execution.LiveSafetyStop, Exception))
+
+    # --- --max-signal-delay enforced at the actual LIVE send (second review, 1) ---
+
+    def bind_cycle(self, seconds_after_boundary):
+        from trading_bot.utils.network_recovery import CycleGuard
+
+        boundary = datetime(2026, 11, 17, 22, 0, tzinfo=timezone.utc)
+        self.now = [boundary + timedelta(seconds=seconds_after_boundary)]
+        guard = CycleGuard(1800, 120, clock=lambda: self.now[0])
+        self.assertTrue(guard.start(boundary))
+        self.gate.bind_cycle(lambda: guard.fresh("live_send"))
+        return guard
+
+    def delay_reads(self, mock, seconds):
+        original = mock.side_effect or (lambda *args, _value=mock.return_value: _value)
+
+        def slow(*args):
+            self.now[0] += timedelta(seconds=seconds)
+            return original(*args)
+        mock.side_effect = slow
+
+    def record_intent_writes(self):
+        save, self.intents = self.gate._save, []
+
+        def recorded():
+            self.intents.append(self.gate.pending)
+            save()
+        self.stack.enter_context(patch.object(self.gate, "_save", side_effect=recorded))
+
+    def assert_nothing_sent_or_reserved(self, open_count=0, charges=Decimal("0")):
+        state = json.loads(self.gate.path.read_text())
+        self.assertFalse(state["pending"])  # No unresolved intent left behind.
+        self.assertEqual((self.gate.open_count, self.gate.charges), (open_count, charges))
+        self.assertEqual((state["open_count"], Decimal(state["estimated_charges_usd"])), (open_count, charges))
+        self.assertTrue(self.gate.armed and not self.gate.failed)
+
+    def test_open_whose_cycle_expires_during_live_preflight_reads_is_never_sent(self):
+        self.gate.arm()
+        guard = self.bind_cycle(119)  # Fresh when HMA checks it...
+        self.delay_reads(self.api.getSingleMarketDetails, 4)  # ...123 s by the time it would send.
+        self.record_intent_writes()
+        with self.assertLogs("trading_bot", level="WARNING") as logs:
+            self.assertEqual(self.api.createPosition("EURUSD", "BUY", 100), (None, None))
+        self.send.assert_not_called()  # Zero POST.
+        self.assertEqual(self.intents, [])  # No intent was ever written for it.
+        self.assert_nothing_sent_or_reserved()
+        self.assertIn("reason=stale_boundary stage=live_send", "\n".join(logs.output))
+        self.assertIsNone(guard.current)
+
+    def test_close_whose_cycle_expires_during_ownership_checks_is_never_sent(self):
+        self.gate.arm()
+        self.api.createPosition("EURUSD", "BUY", 100)
+        sent, opened, charges = self.send.call_count, self.gate.open_count, self.gate.charges
+        self.bind_cycle(119)
+        self.delay_reads(self.api.getsinglePosition, 4)
+        self.record_intent_writes()
+        with self.assertLogs("trading_bot", level="WARNING"):
+            self.assertEqual(self.api.closePosition("owned"), (None, None))
+        self.assertEqual(self.send.call_count, sent)  # Zero DELETE.
+        self.assertEqual(self.intents, [])
+        self.assertIn("owned", self.gate.owned)
+        self.assert_nothing_sent_or_reserved(opened, charges)
+
+    def test_cycle_expiring_during_the_durable_intent_write_rolls_it_back_without_sending(self):
+        self.gate.arm()
+        self.bind_cycle(119)
+        save = self.gate._save
+        written = []
+
+        def stalled_save():
+            save()
+            written.append(json.loads(self.gate.path.read_text())["pending"])
+            self.now[0] += timedelta(seconds=4)
+
+        with patch.object(self.gate, "_save", side_effect=stalled_save), \
+                self.assertLogs("trading_bot", level="WARNING"):
+            self.assertEqual(self.api.createPosition("EURUSD", "BUY", 100), (None, None))
+        self.assertEqual(written, [True, False])  # Intent written, then withdrawn unsent.
+        self.send.assert_not_called()
+        self.assert_nothing_sent_or_reserved()
+
+    def test_fresh_order_still_follows_the_normal_gate(self):
+        self.gate.arm()
+        self.bind_cycle(30)
+        self.delay_reads(self.api.getSingleMarketDetails, 4)  # 34 s: still current.
+        result, status = self.api.createPosition("EURUSD", "BUY", 100)
+        self.assertEqual((result, status), ({"dealReference": "open-ref"}, 200))
+        self.send.assert_called_once()  # fake_mutation asserts the intent was durable first.
+        self.assertEqual(self.send.call_args.kwargs["json"]["stopDistance"], 0.001)
+        self.assertEqual(list(self.gate.owned), ["owned"])
+        self.assertEqual(self.gate.open_count, 1)
+        self.assertGreater(self.gate.charges, 0)
+        self.api.closePosition("owned")
+        self.assertEqual(self.send.call_count, 2)
+        self.assertFalse(json.loads(self.gate.path.read_text())["pending"])
+
+    def run_live_hma(self, signal, stalled_read, seconds):
+        """The real HMA loop and LIVE gate; the cycle starts 119 s after its boundary."""
+        from trading_bot.strategies import hma
+
+        boundary = datetime(2026, 11, 17, 22, 0, tzinfo=timezone.utc)
+        self.now = [boundary + timedelta(seconds=119)]
+        self.delay_reads(stalled_read, seconds)
+        self.api.prepare_trading_cycle = Mock(return_value=False)
+        with patch("sys.argv", ["hma.py", "--REAL", "--cycles", "1", "--max-signal-delay", "120"]), \
+                patch.object(hma, "create_trading_api", return_value=self.api), \
+                patch.object(hma, "wait_until_targets", return_value=boundary), \
+                patch.object(hma, "calculate_hma_result", return_value=signal), \
+                patch("trading_bot.utils.network_recovery._utc_now", side_effect=lambda: self.now[0]), \
+                redirect_stdout(io.StringIO()) as stdout, \
+                self.assertLogs("trading_bot", level="INFO") as logs:
+            logging.getLogger("trading_bot.tests").info("live scenario start")
+            hma.main()
+        self.stdout = stdout.getvalue()
+        return "\n".join(logs.output)
+
+    def test_hma_live_order_reaching_the_send_after_the_cutoff_is_skipped(self):
+        self.gate.arm()
+        output = self.run_live_hma("BUY", self.api.getSingleMarketDetails, 4)  # 119 s -> 123 s.
+        self.send.assert_not_called()
+        self.assertIn("reason=stale_boundary stage=live_send", output)
+        self.assert_nothing_sent_or_reserved()
+
+        self.gate.bind_cycle(None)  # Outside any strategy cycle: set up an owned position.
+        self.api.createPosition("EURUSD", "BUY", 100)
+        self.assertEqual(list(self.gate.owned), ["owned"])
+        sent, opened, charges = self.send.call_count, self.gate.open_count, self.gate.charges
+        self.api.getsinglePosition.side_effect = lambda deal: next(
+            (p for p in self.positions if p["position"]["dealId"] == deal), None)
+        output = self.run_live_hma("SELL", self.api.getsinglePosition, 4)
+        self.assertEqual(self.send.call_count, sent)  # Zero DELETE.
+        self.assertIn("reason=stale_boundary stage=live_send", output)
+        self.assert_nothing_sent_or_reserved(opened, charges)
+
+    def test_hma_live_order_within_the_cutoff_is_sent_through_the_gate(self):
+        self.gate.arm()
+        self.run_live_hma("BUY", self.api.getSingleMarketDetails, 0.5)  # 119.5 s at the send.
+        self.send.assert_called_once()
+        self.assertEqual(list(self.gate.owned), ["owned"])
+        self.assertFalse(json.loads(self.gate.path.read_text())["pending"])
 
 
 if __name__ == "__main__":

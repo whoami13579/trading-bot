@@ -13,13 +13,15 @@ Safety model
 * Missed candle boundaries are never replayed and a boundary is executed at most once.
 * A DEMO order acknowledged with HTTP 200 stays pending, across client replacement,
   until the broker confirms it and the position list reflects it. No further
-  strategy order is sent meanwhile; an overdue or inconsistent one stops trading.
+  strategy order is sent meanwhile. It is polled between candle boundaries and,
+  during an outage, the pause is bounded by its deadline: an overdue or
+  inconsistent order stops trading for manual reconciliation.
 
 Log messages contain only fixed reason codes, counts and durations: never
 credentials, tokens, account or deal identifiers, URLs or exception text.
 """
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -262,15 +264,22 @@ class PendingOrders:
 
     Entries are held by the strategy, not by a client, so they survive client
     replacement after an outage. They are kept in memory only: a process restart loses
-    them, and every stop or shutdown with entries left warns that manual reconciliation
-    is required. Only the read-only confirmation and positions endpoints are used; an
+    them, and every exit with entries left warns that manual reconciliation is
+    required. Only the read-only confirmation and positions endpoints are used; an
     order is never resubmitted.
+
+    Every entry has a monotonic deadline ``timeout`` seconds after its acknowledgement,
+    enforced independently of the candle schedule: ``poll`` runs during the scheduler
+    wait, and the wait, read retries and outage pauses are all bounded by it.
     """
 
-    def __init__(self, symbol, *, enabled=True, timeout=300.0, monotonic=None, sleep=None):
+    def __init__(self, symbol, *, enabled=True, timeout=300.0, poll_interval=10.0,
+                 monotonic=None, sleep=None):
         self.symbol = symbol
         self.enabled = enabled
         self.timeout = bounded_seconds(timeout, "order_confirmation_timeout", minimum=1.0, maximum=86400.0)
+        self.poll_interval = bounded_seconds(
+            poll_interval, "order_confirmation_poll_interval", minimum=0.1, maximum=self.timeout)
         self._monotonic = monotonic
         self._sleep = sleep
         self.entries = []
@@ -296,7 +305,8 @@ class PendingOrders:
         reference = result.get("dealReference") if isinstance(result, dict) else None
         if not isinstance(reference, str) or not _DEAL_REFERENCE.fullmatch(reference):
             reference = None  # Unconfirmable: the next resolution stops for manual review.
-        self.entries.append({**order, "reference": reference, "since": self.monotonic()})
+        self.entries.append({**order, "reference": reference, "since": self.monotonic(),
+                             "announced": False})
         _LOGGER.info(
             "Order acknowledged operation=%s; no further strategy order until the broker "
             "confirms it and positions reflect it", order["operation"],
@@ -352,19 +362,34 @@ class PendingOrders:
             )
         return not any(row["position"]["dealId"] == entry["deal_id"] for row in rows)
 
-    def resolve(self, api, *, attempts=1, delay=1.0) -> bool:
-        """Return True once nothing is pending; False while confirmation is still pending.
+    def deadline(self):
+        """Monotonic time by which every pending entry must be resolved, or None."""
+        if not self.entries:
+            return None
+        return min(entry["since"] for entry in self.entries) + self.timeout
 
-        Raises TradingUnavailable (outcome uncertain) when a confirmation is rejected,
-        malformed or inconsistent, or still unresolved after ``timeout`` seconds.
-        """
-        for attempt in range(attempts):
-            if not self.entries:
-                return True
-            if attempt:
-                self.sleep(delay)
-            positions = []  # Fetched at most once per attempt, only after a confirmation.
-            remaining = []
+    def pollable(self) -> bool:
+        """Whether a confirmation can be looked up between candle boundaries."""
+        return any(entry["reference"] is not None for entry in self.entries)
+
+    def bounded_reads(self, api):
+        """Limit the client's read-retry backoff to the remaining confirmation time."""
+        deadline = self.deadline()
+        if deadline is None or getattr(type(api), "read_retry_deadline", None) is None:
+            return nullcontext()
+        return api.read_retry_deadline(deadline)
+
+    def stop_if_overdue(self):
+        """Stop for manual reconciliation once the confirmation deadline is reached."""
+        deadline = self.deadline()
+        if deadline is not None and self.monotonic() >= deadline:
+            self._fail("order_confirmation_unresolved", self.entries[0], "confirmation_timeout")
+
+    def _check(self, api):
+        """One read-only pass; drops every entry that is confirmed and reconciled."""
+        positions = []  # Fetched at most once per pass, only after a confirmation.
+        remaining = []
+        with self.bounded_reads(api):
             for entry in self.entries:
                 if self._reconciled(api, entry, positions):
                     _LOGGER.info(
@@ -372,18 +397,56 @@ class PendingOrders:
                     )
                 else:
                     remaining.append(entry)
-            self.entries = remaining
+        self.entries = remaining
+
+    def resolve(self, api, *, attempts=1, delay=1.0) -> bool:
+        """Return True once nothing is pending; False while confirmation is still pending.
+
+        Raises TradingUnavailable (outcome uncertain) when a confirmation is rejected,
+        malformed or inconsistent, or still unresolved after ``timeout`` seconds.
+        Waits between attempts never extend past that deadline.
+        """
+        for attempt in range(attempts):
+            if not self.entries:
+                return True
+            if attempt:
+                remaining = self.deadline() - self.monotonic()
+                if remaining <= 0:
+                    break
+                self.sleep(min(delay, remaining))
+            self._check(api)
         if not self.entries:
             return True
-        age = self.monotonic() - min(entry["since"] for entry in self.entries)
-        if age >= self.timeout:
-            self._fail("order_confirmation_unresolved", self.entries[0], "confirmation_timeout")
+        self.stop_if_overdue()
         _LOGGER.warning(
             "Scheduled cycle skipped reason=order_confirmation_pending pending_orders=%d "
             "age_seconds=%.0f timeout_seconds=%.0f; no signal or order until confirmed",
-            len(self.entries), age, self.timeout,
+            len(self.entries), self.monotonic() - (self.deadline() - self.timeout), self.timeout,
         )
         return False
+
+    def poll(self, api):
+        """Between candle boundaries: check once; return seconds until the next check.
+
+        Returns None once nothing is pending (or nothing can be looked up). Never
+        evaluates a signal or sends an order; raises like ``resolve`` when overdue or
+        inconsistent.
+        """
+        if not self.pollable():
+            return None
+        self._check(api)
+        if not self.entries:
+            return None
+        self.stop_if_overdue()
+        for entry in self.entries:
+            if not entry["announced"]:
+                entry["announced"] = True
+                _LOGGER.warning(
+                    "Order confirmation pending operation=%s; rechecking every %.0f seconds "
+                    "for up to timeout_seconds=%.0f; no signal or order until confirmed",
+                    entry["operation"], self.poll_interval, self.timeout,
+                )
+        return min(self.poll_interval, max(0.0, self.deadline() - self.monotonic()))
 
 
 def warn_unconfirmed(pending):
@@ -487,9 +550,15 @@ class NetworkSupervisor:
         attempt = 0
         while True:
             self._stop_at_deadline(exc, reason, started, deadline)
+            if self.pending is not None:
+                # Unreachable confirmations cannot wait out an outage: stop at their deadline.
+                self.pending.stop_if_overdue()
             delay = self.policy.next_delay()
             if deadline is not None:
                 delay = min(delay, deadline - self.monotonic())
+            confirm_by = self.pending.deadline() if self.pending is not None else None
+            if confirm_by is not None:
+                delay = min(delay, max(0.0, confirm_by - self.monotonic()))
             if self.shutdown is not None:
                 self.shutdown.check()
             self.sleep(delay)
@@ -530,14 +599,11 @@ class NetworkSupervisor:
             return api
 
     def recover(self, exc: TradingUnavailable, api):
-        """Return a verified replacement client, or re-raise to stop trading."""
-        try:
-            return self._recover(exc, api)
-        except TradingUnavailable:  # A shutdown reports pending orders itself.
-            warn_unconfirmed(self.pending)
-            raise
+        """Return a verified replacement client, or re-raise to stop trading.
 
-    def _recover(self, exc, api):
+        While orders await confirmation the pause ends at their deadline: one last
+        check is attempted then, and trading stops if they are still unresolved.
+        """
         self._require_recoverable(exc, api)
 
         def attempt():
@@ -546,8 +612,11 @@ class NetworkSupervisor:
                 "Session reauthenticated environment=%s; account identity and environment "
                 "match the original session", self.environment.upper(),
             )
-            self.reconcile(client, self.symbol)
-            if self.pending is not None:
+            if self.pending is None:
+                self.reconcile(client, self.symbol)
+                return client
+            with self.pending.bounded_reads(client):
+                self.reconcile(client, self.symbol)
                 # Unconfirmed orders survive the client replacement and are rechecked on
                 # the new session; inconsistent or overdue ones stop recovery here.
                 self.pending.resolve(client)

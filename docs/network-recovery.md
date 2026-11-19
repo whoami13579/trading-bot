@@ -79,6 +79,12 @@ rather than resumed. A deadline shorter than `--recovery-interval` therefore sto
 probing. The default of 0 waits indefinitely, which suits unattended operation. While
 paused, the bot logs every failed probe, so a long outage is visible in the logs.
 
+An order still awaiting confirmation (§4) also bounds the pause, whatever `--max-outage`
+says: the last wait is shortened so that one final recovery attempt runs at the
+confirmation deadline. If that attempt cannot confirm the order, the bot stops with
+`order_confirmation_unresolved` for manual reconciliation instead of waiting out the
+outage.
+
 A transient failure **during startup**, before any trade, follows the same pause/probe
 loop using the normal startup factory. Authentication failures at startup still stop
 immediately.
@@ -95,7 +101,15 @@ immediately.
   cycle starts, before the signal is calculated, and again immediately before **each**
   order request, including each close in a batch. If the cycle expires between closes,
   the remaining positions are left untouched until the next cycle. A stale cycle
-  calculates no signal and submits nothing. This also covers a host
+  calculates no signal and submits nothing.
+* **LIVE sends.** The LIVE execution gate reads the account, market and positions before
+  it sends an order, which takes time after HMA's own check. HMA binds the cycle to the
+  gate, so the gate checks the deadline again after those reads and before writing its
+  durable intent. If the cycle expired, nothing is written or sent and no opening-order or
+  charge allowance is used (`reason=stale_boundary stage=live_send`). It checks once more
+  after the durable write, immediately before the request. If the cycle expired during the
+  write, the intent and allowances are rolled back unsent. A request that is sent keeps
+  the durable intent written before it. This also covers a host
   that slept or suspended (common on WSL laptops) and long renewals. With `--days 5`, the
   first boundary after a weekend market-open wait is skipped rather than traded late.
 * **Candle freshness.** A fresh boundary can still receive stale or incomplete broker
@@ -147,21 +161,33 @@ immediately.
   * the opened deal is listed, or the closed deal is gone
 
   Checks run at each cycle start, between closes in a batch (up to 3 reads, 1 s apart),
-  and right after recovery reauthenticates. While an entry is pending (404, `PENDING`,
-  `UNKNOWN`, or the list not caught up), no signal is calculated and no order is sent
-  (`reason=order_confirmation_pending`). A rejected, malformed or mismatched
-  confirmation, or an acknowledgement without a usable reference, stops the bot for
-  manual reconciliation (`order_confirmation_mismatch`). So does an entry still
-  unresolved after 300 seconds (`ORDER_CONFIRMATION_TIMEOUT` in `strategy_defaults.py`,
-  reason `order_confirmation_unresolved`). Only read-only endpoints are used, and nothing
-  is resubmitted. LIVE keeps its own synchronous confirmation inside the execution gate,
-  so the tracker is disabled there.
+  right after recovery reauthenticates, and **while waiting for the next boundary**. While
+  an entry is pending (404, `PENDING`, `UNKNOWN`, or the list not caught up), no signal is
+  calculated and no order is sent (`reason=order_confirmation_pending`). A rejected,
+  malformed or mismatched confirmation, or an acknowledgement without a usable reference,
+  stops the bot for manual reconciliation (`order_confirmation_mismatch`).
+
+  Every entry has a **monotonic deadline 300 seconds after its acknowledgement**
+  (`ORDER_CONFIRMATION_TIMEOUT`). The deadline does not depend on the candle schedule. The
+  scheduler wait checks the confirmation as soon as it starts, then every 10 seconds
+  (`ORDER_CONFIRMATION_POLL_INTERVAL`). The last check falls exactly on the deadline.
+  Polling only reads the confirmation and position list. It never calculates a signal,
+  runs a cycle or sends an order between boundaries, and it stops once the order is
+  confirmed. Waits between in-batch checks, read-retry backoff during these checks and the
+  outage pause (§2) never extend past the deadline. An entry still unresolved at the
+  deadline stops the bot for manual reconciliation (`order_confirmation_unresolved`). On
+  the default 30-minute schedule that is about 300 seconds after the order, not at the
+  next boundary 1,800 seconds later. Only read-only endpoints are used, and nothing is
+  resubmitted. LIVE keeps its own synchronous confirmation inside the execution gate, so
+  the tracker is disabled there.
 * The existing single-send protections are unchanged. These include the local order quota,
   the LIVE gate's durable pending-intent journal, confirmation polling without resubmission
   and ownership checks.
 * Ctrl+C or SIGTERM during an order request is **deferred until that single request
-  returns**, so stopping never creates an uncertain order. A second signal forces an
-  immediate interrupt; the order is then reported as uncertain.
+  returns**, so stopping never creates an uncertain order. The returned `dealReference` is
+  recorded inside the same protected section, before the deferred stop takes effect, so a
+  stop can never lose an acknowledged open or close. A second signal forces an immediate
+  interrupt; the order is then reported as uncertain.
 
 ## 5. LIVE
 
@@ -197,8 +223,9 @@ overridden on the command line without code changes:
 | `--max-signal-delay S` | 120.0 | Skip a cycle that starts later than this after its boundary |
 | `--no-network-recovery` | off | Stop on an outage instead of pausing |
 
-The DEMO order confirmation timeout, `ORDER_CONFIRMATION_TIMEOUT` (300 s), is a default
-in `strategy_defaults.py` with no CLI option.
+The DEMO order confirmation timeout, `ORDER_CONFIRMATION_TIMEOUT` (300 s), and the
+interval between confirmation checks while waiting, `ORDER_CONFIRMATION_POLL_INTERVAL`
+(10 s), are defaults in `strategy_defaults.py` with no CLI option.
 
 `--network-retries 0 --no-network-recovery` restores the previous fail-closed behavior.
 Invalid values are rejected before credentials are loaded or any request is made.
@@ -225,7 +252,9 @@ own handlers.
 | Resumed | `Scheduled trading resumed environment=DEMO; missed boundaries are skipped ...` |
 | Skipped cycle | `Scheduled cycle skipped reason=stale_boundary stage=order ...` |
 | Stale candles | `Scheduled cycle skipped reason=expected_candle_missing timeframe=MINUTE_30 boundary_utc=... latest_completed_candle_utc=...` |
-| Order pending | `Order acknowledged operation=open ...`, `Scheduled cycle skipped reason=order_confirmation_pending pending_orders=1 ...` |
+| Order pending | `Order acknowledged operation=open ...`, `Order confirmation pending operation=open; rechecking every 10 seconds ...`, `Scheduled cycle skipped reason=order_confirmation_pending pending_orders=1 ...` |
+| LIVE send expired | `Scheduled cycle skipped reason=stale_boundary stage=live_send ...` |
+| Unconfirmed at exit | `1 acknowledged order(s) are not yet confirmed by the broker. They are not tracked across a restart: reconcile positions on Capital.com before restarting.` |
 | Order confirmed | `Order confirmed operation=open; broker positions reflect it` |
 | Order unresolved | `Trading stopped reason=order_confirmation_unresolved operation=open detail=confirmation_timeout ...` |
 | Unrecoverable | `Trading stopped reason=authentication_failed_http_401 ...` |
@@ -236,7 +265,9 @@ own handlers.
   in-flight order request first and never closes positions on exit; broker stops (LIVE)
   remain in place. The final log line says whether an order outcome is uncertain. Any
   order still awaiting confirmation is reported at CRITICAL level, because it is not
-  remembered after a restart.
+  remembered after a restart. This warning is given on **every** exit with such an
+  order: a signal, any stop, and also a normal `--cycles` completion. An order sent in
+  the final cycle has had no wait in which to be confirmed, so it is always reported.
 * **Restart after a network stop** (for example `--max-outage` reached, or recovery
   disabled): restarting is safe once connectivity is back. HMA reads broker positions
   every cycle and opens a position only when none exists for the symbol.
@@ -270,7 +301,10 @@ HMA loop against a stateful offline broker on a deterministic clock. It covers:
 * ambiguous open and close outcomes
 * duplicate prevention, including an acknowledged BUY or close that is not yet listed when
   an outage starts
-* confirmation mismatch and timeout
+* confirmation mismatch and timeout, including the 300-second deadline on the default
+  30-minute schedule, polling during the wait and during an outage
+* SIGTERM deferred during a successful open or close, and warnings at every exit
+* LIVE gate reads that push an order past `--max-signal-delay` (no POST or DELETE)
 * skipped and stale boundaries
 * stale, incomplete and gapped candles, with and without `--schedule-time-frame`
 * freshness between closes in a batch
@@ -295,6 +329,13 @@ calculated, no orders were sent and no LIVE request was made.
   replacement and reconnection, but only in memory: **not across a process restart**. An
   uncertain or unresolved outcome stops the process, and a manual restart relies on the
   operator's reconciliation.
+* An outage that outlasts the 300-second confirmation deadline stops the bot rather than
+  resuming, because the order cannot be confirmed meanwhile.
+* The confirmation deadline bounds waits and retry backoff, but an individual HTTP
+  request can still take up to its 5-second connect and 20-second read timeouts. The stop
+  can therefore come that much after the deadline.
+* An acknowledgement without a usable `dealReference` cannot be polled. It stops the bot
+  at the next cycle start, before any signal or order, rather than during the wait.
 * Confirmation handling was verified against a mocked broker that follows the documented
   `/confirms` response shape, not against real DEMO orders.
 * Candle freshness requires the broker's candle for the expected period. A quiet market

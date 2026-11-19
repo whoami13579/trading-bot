@@ -1,4 +1,5 @@
 import requests
+from contextlib import contextmanager
 import logging
 from datetime import datetime, timezone
 import time
@@ -73,6 +74,7 @@ class TradingApi(
         self._preparing_cycle = False
         self._last_cycle_ping: dict | None = None
         self._read_retry_policy = None  # Opt-in; GET requests only.
+        self._read_retry_deadline = None  # Optional monotonic bound on retry backoff.
         supplied = (x_cap_api_key, identifier, password)
         if all(value is None for value in supplied):
             values = load_credentials()
@@ -132,6 +134,20 @@ class TradingApi(
             raise TypeError("retry_policy_required")
         self._read_retry_policy = policy
 
+    @contextmanager
+    def read_retry_deadline(self, deadline):
+        """Within this block, read-retry backoff never extends past ``deadline``.
+
+        ``deadline`` is a ``time.monotonic()`` value. A retry that would start at or
+        after it is not attempted, and the read fails with its network reason.
+        """
+        previous = getattr(self, "_read_retry_deadline", None)
+        self._read_retry_deadline = deadline
+        try:
+            yield
+        finally:
+            self._read_retry_deadline = previous
+
     def _wait_for_read_retry(self, policy, retries, reason, method, path):
         """Sleep before another GET attempt; False when the request must stop now."""
         if policy is None or method.lower() != "get" or not is_transient(reason):
@@ -146,6 +162,17 @@ class TradingApi(
                 )
             return False
         delay = policy.delay(retries + 1)
+        bound = getattr(self, "_read_retry_deadline", None)
+        if bound is not None:
+            remaining = bound - time.monotonic()
+            if remaining <= 0:
+                _LOGGER.error(
+                    "API read retries stopped environment=%s method=%s endpoint=%s "
+                    "exception_category=%s attempts=%d: confirmation deadline reached",
+                    *labels, reason, retries + 1,
+                )
+                return False
+            delay = min(delay, remaining)
         _LOGGER.warning(
             "API read retry scheduled environment=%s method=%s endpoint=%s "
             "exception_category=%s retry=%d max_retries=%d delay_seconds=%.2f",

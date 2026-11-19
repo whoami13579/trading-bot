@@ -89,6 +89,7 @@ def main() -> None:
         PendingOrders,
         ShutdownRequested,
         configure_runtime_logging,
+        warn_unconfirmed,
     )
     from trading_bot.config import strategy_defaults
 
@@ -96,7 +97,8 @@ def main() -> None:
     shutdown = GracefulShutdown()
     # Held here, not by a client, so unconfirmed DEMO orders survive client replacement.
     pending = PendingOrders(SYMBOL, enabled=not args.real,
-                            timeout=strategy_defaults.ORDER_CONFIRMATION_TIMEOUT)
+                            timeout=strategy_defaults.ORDER_CONFIRMATION_TIMEOUT,
+                            poll_interval=strategy_defaults.ORDER_CONFIRMATION_POLL_INTERVAL)
     supervisor = NetworkSupervisor(
         recovery_policy,
         environment="live" if args.real else "demo",
@@ -119,19 +121,27 @@ def main() -> None:
                     args, symbol=SYMBOL, size=QUANTITY))
             current["api"] = tradingApi
             tradingApi.configure_read_retries(retry_policy)
+            gate = getattr(tradingApi, "_live_execution", None) if args.real else None
+            if gate is not None:
+                # The LIVE gate reads account and market state before sending; it rechecks
+                # this cycle's deadline immediately before the order itself.
+                gate.bind_cycle(lambda: guard.fresh("live_send"))
             _run_cycles(args, current, supervisor, guard, shutdown, pending, TIMES,
                         SYMBOL, TIMEFRAME, HMA_PERIOD, QUANTITY, DAYS, DIRECTION)
     except ShutdownRequested as stop:
-        _report_shutdown(current["api"], pending)
+        _report_shutdown(current["api"])
         raise SystemExit(stop.exit_code) from None
     except KeyboardInterrupt:
-        _report_shutdown(current["api"], pending)
+        _report_shutdown(current["api"])
         raise SystemExit(130) from None
+    finally:
+        # Every exit, including normal --cycles completion and any stop: acknowledged
+        # orders still awaiting confirmation must be reconciled before a restart.
+        warn_unconfirmed(pending)
 
 
-def _report_shutdown(api, pending=None):
+def _report_shutdown(api):
     import logging
-    from trading_bot.utils.network_recovery import warn_unconfirmed
 
     uncertain = getattr(api, "_mutation_outcome_uncertain", False) is True
     logging.getLogger("trading_bot.strategies.hma").warning(
@@ -139,7 +149,6 @@ def _report_shutdown(api, pending=None):
         "; an order request was interrupted and its outcome is uncertain: reconcile on "
         "Capital.com before restarting" if uncertain else "",
     )
-    warn_unconfirmed(pending)
 
 
 def _run_cycles(args, current, supervisor, guard, shutdown, pending, TIMES,
@@ -151,7 +160,10 @@ def _run_cycles(args, current, supervisor, guard, shutdown, pending, TIMES,
     completed_cycles = 0
     while args.cycles is None or completed_cycles < args.cycles:
         try:
-            boundary = wait_until_targets(TIMES, keepalive=tradingApi.prepare_trading_cycle)
+            # Pending confirmations are polled (reads only) while waiting, so their deadline
+            # does not depend on the candle schedule.
+            polling = {"poll": lambda: pending.poll(tradingApi)} if pending.pollable() else {}
+            boundary = wait_until_targets(TIMES, keepalive=tradingApi.prepare_trading_cycle, **polling)
             completed_cycles += 1
 
             if DAYS == 7:
@@ -190,10 +202,14 @@ def _run_cycles(args, current, supervisor, guard, shutdown, pending, TIMES,
                     if not pending.resolve(tradingApi, attempts=3) or not guard.fresh("order"):
                         break
                     with shutdown.order_request():
-                        result, code = tradingApi.closePosition(target.dealId)
-                    if code == 200:
-                        pending.record_close(result, deal_id=target.dealId)
-                    else:
+                        result, sent = tradingApi.closePosition(target.dealId)
+                        # Recorded before a deferred shutdown can take effect.
+                        if sent == 200:
+                            pending.record_close(result, deal_id=target.dealId)
+                    if sent is None:
+                        break  # LIVE gate: the cycle expired during its checks; nothing sent.
+                    code = sent
+                    if code != 200:
                         print(f"failed to close position ({result})")
 
                 if code == 200:
@@ -208,9 +224,13 @@ def _run_cycles(args, current, supervisor, guard, shutdown, pending, TIMES,
                         continue
                     with shutdown.order_request():
                         result, code = tradingApi.createPosition(SYMBOL, hma_result, QUANTITY)
+                        # Recorded before a deferred shutdown can take effect.
+                        if code == 200:
+                            pending.record_open(result, direction=hma_result, size=QUANTITY)
 
+                    if code is None:
+                        continue  # LIVE gate: the cycle expired during its checks; nothing sent.
                     if code == 200:
-                        pending.record_open(result, direction=hma_result, size=QUANTITY)
                         color = colors.BLUE if hma_result == "BUY" else colors.RED
                         print(f">>> {color}{hma_result}{colors.ENDC} order submitted")
                     else:
