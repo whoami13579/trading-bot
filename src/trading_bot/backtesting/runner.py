@@ -92,7 +92,7 @@ def plan(request: BacktestRequest, *, now=None) -> Plan:
     strategy = adapter.build(**request.parameters)
     grid = adapter.execution == "grid"
     if grid:
-        if request.size is not None and request.size != strategy.level_size:
+        if request.size is not None:  # Any explicit size, even one equal to level_size.
             raise PlanError(
                 "--size does not apply to --strategy grid; set the quantity per level "
                 "with --level-size"

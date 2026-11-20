@@ -23,10 +23,11 @@ Timeline per candle (only candles with ``start <= timestamp`` and
    - Touch: otherwise a buy fills at its limit when ask low <= limit; a sell
      fills at its limit when bid high >= limit. No queue position is modeled.
    - Multiple levels in one candle: every touched eligible order fills, each
-     at its own price, processed along an assumed path open -> nearer extreme
-     -> farther extreme -> close (ties: low first), judged on the midpoint (or
-     indicative) candle. Gap fills come first; at the same path point exits
-     come before entries, then order id.
+     at its own price, processed along one assumed path open -> nearer extreme
+     (segment 1) -> farther extreme (segment 2) -> close (ties: low first),
+     chosen on the midpoint (or indicative) candle. Gap fills come first, then
+     segment, then progress through the segment on the order's own series; at
+     the same path point exits come before entries, then order id.
    - Orders created by a fill (a lot's exit, or the entry restored after an
      exit) are eligible from the next candle only, so no lot opens and closes
      inside one candle.
@@ -40,9 +41,9 @@ Funding and exposure:
 - Admission reserves ``level_size * limit / leverage`` for every working entry
   after checking ``equity - used margin - reserved margin - commission``. A
   fill checks again using only information available at that moment (open
-  lots marked at the fill price, with the other side estimated from the
-  observed opening spread). A failed fill check rejects the order; its level
-  is retried at a later open.
+  lots' financing accrued to the fill time, open lots marked at the fill
+  price, with the other side estimated from the observed opening spread). A
+  failed fill check rejects the order; its level is retried at a later open.
 - Lot margin is ``level_size * fill price / leverage``: collateral, not cost.
 
 Costs reuse ``SimulationConfig``: commission per fill, linear financing per
@@ -198,13 +199,14 @@ class GridBook:
 
     def _track_peaks(self):
         peak = self.peak
-        units = self.open_units()
-        if units > peak["open_units"]:
-            peak["open_units"] = units
-            peak["open_lots"] = len(self.lots)
-            peak["open_notional_usd"] = sum(
-                (lot.size * lot.entry_price for lot in self.lots.values()), ZERO
-            )
+        # Each peak is its own running maximum: equal units can carry a larger
+        # entry-price notional after a lot is replaced at a higher price.
+        peak["open_units"] = max(peak["open_units"], self.open_units())
+        peak["open_lots"] = max(peak["open_lots"], len(self.lots))
+        peak["open_notional_usd"] = max(
+            peak["open_notional_usd"],
+            sum((lot.size * lot.entry_price for lot in self.lots.values()), ZERO),
+        )
         peak["committed_units"] = max(peak["committed_units"], self.committed_units())
         peak["used_margin"] = max(peak["used_margin"], self.used_margin())
 
@@ -350,6 +352,10 @@ class GridBook:
         return candle.ask.open - candle.bid.open if candle.bid is not None else ZERO
 
     def _open_lot(self, order, price, candle, index, stamp, fill_type, series):
+        # Existing lots' financing up to the fill time is owed before the check.
+        # accrue_financing advances each lot's clock, so fills sharing a timestamp
+        # (and the candle-end accrual) never charge an interval twice.
+        self.accrue_financing(stamp)
         spread = self._open_spread(candle)
         bid, ask = (price, price + spread) if series == "bid" else (price - spread, price)
         commission = self.commission_rate
@@ -540,6 +546,13 @@ class GridBook:
             mid_low = (candle.bid.low + candle.ask.low) / 2
         else:
             mid_open, mid_high, mid_low = prices.open, prices.high, prices.low
+        # One assumed path for the whole candle, chosen on the midpoint: segment 1
+        # runs open -> nearer extreme, segment 2 runs to the farther extreme (the
+        # close leg cannot reach a new level). Buys below the open are reached only
+        # while falling and sells above it only while rising, so the path direction
+        # fixes each touch's segment. Progress is the fraction of that segment the
+        # order's own quote series has travelled, so bid and ask fills are compared
+        # on the same path rather than by raw distances on different series.
         down_first = mid_open - mid_low <= mid_high - mid_open
         fills = []
         for order in self.working.values():
@@ -549,19 +562,21 @@ class GridBook:
             if order.side == "BUY":
                 q = candle.ask or prices
                 if q.open <= limit:
-                    fills.append((ZERO, order, q.open, "gap_open", "ask"))
+                    fills.append(((0, ZERO), order, q.open, "gap_open", "ask"))
                 elif q.low <= limit:
-                    distance = (q.open - limit if down_first
-                                else (q.high - q.open) + (q.high - limit))
-                    fills.append((distance, order, limit, "touch", "ask"))
+                    point = ((1, (q.open - limit) / (q.open - q.low)) if down_first
+                             else (2, (q.high - limit) / (q.high - q.low)))
+                    fills.append((point, order, limit, "touch", "ask"))
             else:
                 q = candle.bid or prices
                 if q.open >= limit:
-                    fills.append((ZERO, order, q.open, "gap_open", "bid"))
+                    fills.append(((0, ZERO), order, q.open, "gap_open", "bid"))
                 elif q.high >= limit:
-                    distance = (limit - q.open if not down_first
-                                else (q.open - q.low) + (limit - q.low))
-                    fills.append((distance, order, limit, "touch", "bid"))
+                    point = ((2, (limit - q.low) / (q.high - q.low)) if down_first
+                             else (1, (limit - q.open) / (q.high - q.open)))
+                    fills.append((point, order, limit, "touch", "bid"))
+        # Gap fills (segment 0) first, then segment and progress; at the same point
+        # exits precede entries, then the older order.
         fills.sort(key=lambda f: (f[0], f[1].role != EXIT, f[1].id))
         for _, order, price, fill_type, series in fills:
             if order.status != "working":

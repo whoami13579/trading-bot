@@ -23,7 +23,7 @@ from backtest_fixtures import hourly_candles
 from trading_bot.backtesting import cli, runner
 from trading_bot.backtesting.adapters import GRID
 from trading_bot.backtesting.engine import SimulationConfig
-from trading_bot.backtesting.grid import grid_pnl, grid_statistics, simulate_grid
+from trading_bot.backtesting.grid import GridBook, grid_pnl, grid_statistics, simulate_grid
 from trading_bot.backtesting.models import Candle, OHLC
 from trading_bot.backtesting.study_data import FETCH_START, START, END, write_snapshot
 from trading_bot.strategies.grid import Ema, GridStrategy
@@ -427,6 +427,167 @@ class AccountingTests(unittest.TestCase):
         self.assertEqual(a.ledger.orders, b.ledger.orders)
 
 
+def quoted(i, bid, ask):
+    """One candle with explicit bid and ask O/H/L/C (no symmetric spread)."""
+    ask = OHLC(*(D(v) for v in ask))
+    return Candle(at(i), ask, "EURUSD", "HOUR", "fixture", OHLC(*(D(v) for v in bid)), ask)
+
+
+def long_book(strategy, config, reference, first):
+    book = GridBook(config, strategy)
+    book.activate({"direction": "BUY", "reference": D(reference),
+                   "signal_time": first.timestamp}, first, 0)
+    return book
+
+
+def step(book, candle, index):
+    """Drive one scored candle exactly as simulate_grid does (direction held)."""
+    book.accrue_financing(candle.open_time)
+    if book.grid is not None:
+        book.admit(candle, index)
+    book.fill_candle(candle, index)
+    book.accrue_financing(candle.end)
+    book.check_invariants()
+
+
+class ReviewRegressionTests(unittest.TestCase):
+    """Regressions for the PR #6 review findings on de2a760."""
+
+    def test_intrabar_fills_follow_the_midpoint_path_segments(self):
+        # Half-pip levels: lot at 1.10005 exits at 1.10010; a buy works at 1.10000.
+        strategy = GridStrategy(D("1.09950"), D("1.10050"), ema_period=2, grid_intervals=20,
+                                level_size=D(100), max_position=D(200))
+        setup = quoted(0, bid=("1.10006", "1.10007", "1.10002", "1.10004"),
+                       ask=("1.10008", "1.10009", "1.10004", "1.10006"))
+        book = long_book(strategy, SimulationConfig(initial_balance=D("220.05")),
+                         "1.10008", setup)
+        step(book, setup, 0)
+        [lot] = book.lots.values()
+        self.assertEqual(lot.entry_price, D("1.10005"))
+        # Midpoint O 1.1002, H 1.1011, L 1.09995: down first, so the ask touches the
+        # buy on the first segment before the bid reaches the exit on the second.
+        # By raw per-series distance the exit (0.0003) would come before the buy (0.0004).
+        review = quoted(1, bid=("1.1000", "1.1010", "1.0999", "1.1005"),
+                        ask=("1.1004", "1.1012", "1.1000", "1.1007"))
+        step(book, review, 1)
+        buy = next(o for o in book.orders if o.price == D("1.10000"))
+        self.assertEqual((buy.status, buy.reason), ("rejected", "insufficient_available_funds"))
+        # With the lot still open: 220.05 - 0.045 unrealized - 110.005 lot margin
+        # - 0.04 immediate spread = 109.96 < 110.00 required.
+        [rejection] = [r for r in book.rejections
+                       if r["reason"] == "insufficient_available_funds_on_fill"]
+        self.assertEqual((rejection["price"], rejection["available_funds"]),
+                         (D("1.10000"), D("109.960")))
+        [trade] = book.trades  # The exit still fills afterwards, at its limit.
+        self.assertEqual((trade.entry_price, trade.exit_price), (D("1.10005"), D("1.10010")))
+        self.assertEqual(book.lots, {})
+        # The entry restored by that exit is created by a fill: next candle only,
+        # although the ask low (1.1000) is below it.
+        restored = [o for o in book.working.values() if o.role == "entry"]
+        self.assertEqual([(o.price, o.eligible_index, o.created_at) for o in restored],
+                         [(D("1.10005"), 2, at(2))])
+
+    def test_path_segments_order_exits_before_entries_only_at_the_same_point(self):
+        # Up-first midpoint: the sell exit (first segment) precedes the buy (second).
+        strategy = GridStrategy(D("1.09950"), D("1.10050"), ema_period=2, grid_intervals=20,
+                                level_size=D(100), max_position=D(200))
+        setup = quoted(0, bid=("1.10006", "1.10007", "1.10002", "1.10004"),
+                       ask=("1.10008", "1.10009", "1.10004", "1.10006"))
+        book = long_book(strategy, SimulationConfig(), "1.10008", setup)
+        step(book, setup, 0)
+        up = quoted(1, bid=("1.10006", "1.10012", "1.09990", "1.10000"),
+                    ask=("1.10008", "1.10014", "1.09992", "1.10002"))
+        step(book, up, 1)
+        self.assertEqual([e["action"] for e in book.events[1:]], ["OPEN", "CLOSE", "OPEN"])
+        self.assertEqual(book.events[-1]["price"], D("1.10000"))
+
+    FUNDING_STRATEGY = GridStrategy(D("1.0950"), D("1.1050"), ema_period=3, grid_intervals=10,
+                                    level_size=D(100), max_position=D(200))
+    # 100 units x 0.024 USD/unit/day x 1 hour = 0.10 USD per candle per open lot.
+    FINANCING = D("0.024")
+
+    def funding_book(self, balance, strategy=None):
+        strategy = strategy or self.FUNDING_STRATEGY
+        first = bar(0, "1.1005", "1.1006", "1.0998", "1.1004")  # buy 1.1000 touches
+        book = long_book(strategy, SimulationConfig(initial_balance=D(balance),
+                                                    financing_per_unit_day=self.FINANCING),
+                         "1.1010", first)
+        step(book, first, 0)
+        self.assertEqual([lot.entry_price for lot in book.lots.values()], [D("1.1000")])
+        self.assertEqual(book.financing, 0)  # Opened at the candle end.
+        return book
+
+    def test_financing_accrues_before_the_entry_funds_check(self):
+        # The 1.0990 buy touches at the candle end. Before financing: 220.09 - 0.12
+        # unrealized - 110.00 lot margin - 0.02 immediate spread = 109.95, i.e. $0.05
+        # above the 109.90 margin. The lot's hour of financing ($0.10) removes it.
+        book = self.funding_book("220.09")
+        step(book, bar(1, "1.1000", "1.1001", "1.0988", "1.0995"), 1)
+        buy = next(o for o in book.orders if o.price == D("1.0990"))
+        self.assertEqual(buy.status, "rejected")
+        [rejection] = [r for r in book.rejections
+                       if r["reason"] == "insufficient_available_funds_on_fill"]
+        self.assertEqual(rejection["available_funds"], D("109.85"))
+        self.assertEqual(book.financing, D("0.1"))  # Charged once, not again at the end.
+
+    def test_shared_fill_timestamp_charges_each_interval_once(self):
+        strategy = replace(self.FUNDING_STRATEGY, max_position=D(300))
+        book = self.funding_book("1000", strategy)
+        # Buys at 1.0990 and 1.0980 both touch, sharing the candle-end timestamp.
+        step(book, bar(1, "1.1000", "1.1001", "1.0975", "1.0995"), 1)
+        self.assertEqual(sorted(lot.entry_price for lot in book.lots.values()),
+                         [D("1.0980"), D("1.0990"), D("1.1000")])
+        self.assertEqual(book.financing, D("0.1"))  # Only the first lot's hour.
+        step(book, flat(2, "1.0985"), 2)  # No exit or entry is reached.
+        self.assertEqual(book.financing, D("0.4"))  # + three lots for one more hour.
+        self.assertEqual(book.balance, D("1000") - D("0.4"))
+
+    def test_peak_open_notional_is_tracked_independently_of_peak_units(self):
+        strategy = replace(STRATEGY, max_position=D(100))
+        candles = WARM + [
+            bar(3, "1.0985", "1.1012", "1.0984", "1.1012"),  # buy 1.1000 gaps at ask 1.0986
+            bar(4, "1.1020", "1.1022", "1.1018", "1.1021"),  # exit 1.1010 gaps at bid 1.1019
+            bar(5, "1.1020", "1.1022", "1.0998", "1.1022"),  # restored buy touches 1.1000
+        ]
+        result = simulate(candles, strategy)
+        book = result.ledger
+        self.assertEqual([(t.entry_price, t.exit_price) for t in book.trades],
+                         [(D("1.0986"), D("1.1019"))])
+        self.assertEqual([lot.entry_price for lot in book.lots.values()], [D("1.1000")])
+        stats = grid_statistics(result)
+        self.assertEqual(stats["peak_open_units"], D(100))
+        self.assertEqual(stats["peak_open_lots"], 1)
+        self.assertEqual(stats["peak_open_notional_usd"], D("110.00"))
+
+    def test_any_explicit_size_is_rejected_for_grid_only(self):
+        argv = ["--strategy", "grid", "--grid-lower", "1.15", "--grid-upper", "1.19",
+                "--size", "100"]
+        with ExitStack() as stack:
+            fetch = stack.enter_context(patch("trading_bot.backtesting.runner.load_history"))
+            snap = stack.enter_context(patch("trading_bot.backtesting.runner.load_snapshot"))
+            err = stack.enter_context(redirect_stderr(io.StringIO()))
+            with self.assertRaises(SystemExit) as raised:
+                cli.main(argv, now=NOW)
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("--size does not apply to --strategy grid", err.getvalue())
+        fetch.assert_not_called()
+        snap.assert_not_called()
+        with self.assertRaises(runner.PlanError):
+            runner.plan(runner.BacktestRequest(
+                "grid", {"grid_lower": D("1.15"), "grid_upper": D("1.19")}, size=D(100)),
+                now=NOW)
+        # HMA and Donchian keep accepting --size (and default to 100 without it).
+        # Dates before the frozen Donchian holdout, which refuses non-preregistered sizes.
+        dates = ["--start", "2024-01-01", "--end", "2024-02-01"]
+        for key in ("hma", "donchian"):
+            args = cli.build_parser().parse_args(["--strategy", key, "--size", "250", *dates])
+            self.assertEqual(runner.plan(cli.request_from_args(args), now=NOW)
+                             .execution.config.size, D(250))
+            args = cli.build_parser().parse_args(["--strategy", key, *dates])
+            self.assertEqual(runner.plan(cli.request_from_args(args), now=NOW)
+                             .execution.config.size, D(100))
+
+
 def oscillating_snapshot(path):
     """30m snapshot fixture: flat warm-up, then a repeating 4-hour sawtooth above 1.1000."""
     wave = (0, 6, 2, 8, 4, 10, 6, 12)
@@ -468,6 +629,7 @@ class GridCliTests(unittest.TestCase):
             ["--strategy", "grid"],
             ["--strategy", "grid", "--grid-lower", "1.1"],
             [*GRID_ARGS, "--size", "50"],
+            [*GRID_ARGS, "--size", "100"],  # Even when equal to --level-size.
             [*GRID_ARGS, "--execution-model", "continuous"],
             [*GRID_ARGS, "--execution-model", "research"],
             [*GRID_ARGS, "--cost-case", "base"],

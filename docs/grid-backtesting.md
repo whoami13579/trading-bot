@@ -69,7 +69,8 @@ uv run trading-bot-backtest --strategy grid --data-source snapshot \
 | `--financing-usd-per-unit-day` | unmodeled | Linear debit per lot unit per calendar day |
 | `--initial-balance`, `--leverage` | 1000, 1 | USD cash; simulated collateral ratio |
 
-Missing bounds, `--size`, `--cost-case`, another model or another strategy's
+Missing bounds, any explicit `--size` (even one equal to `--level-size`),
+`--cost-case`, another model or another strategy's
 parameters exit 2 before data access. Invalid values (`--ema-period 1`,
 `upper <= lower`, `--max-position` below `--level-size`, levels that collapse
 after rounding) exit 1 with `Backtest failed: …`.
@@ -118,7 +119,7 @@ EURUSD tick (half-even), and never move during a run.
 | Quote side | Buys against the **ask** OHLC, sells against the **bid** OHLC (indicative OHLC without bid/ask) |
 | Gap-through | A buy whose ask **open** ≤ limit fills at the ask open; a sell whose bid open ≥ limit fills at the bid open (better than the limit, never worse) |
 | Touch | Otherwise a buy fills at its limit when ask low ≤ limit; a sell fills at its limit when bid high ≥ limit. Touching counts as a fill; queue position is not modeled |
-| Multiple levels in one candle | Every touched eligible order fills at its own price. They are processed along the assumed path open → nearer extreme → farther extreme → close, using the midpoint candle; ties go low first. Gap fills come first. At the same path point, exits come before entries, then lower order id |
+| Multiple levels in one candle | Every touched eligible order fills at its own price. The midpoint candle picks one path for both quote series: open → nearer extreme (segment 1) → farther extreme (segment 2) → close; ties go low first. Buys below the open are reached only while falling and sells above it only while rising, so the path fixes each touch's segment. Within a segment, fills are ordered by the fraction of that segment the order's own bid or ask series has travelled. Gap fills come first. At the same path point, exits come before entries, then lower order id |
 | New orders | Orders seeded or re-admitted at an open may fill in that candle, including a gap at that open. Orders **created by a fill** (a lot's exit, a restored entry) are eligible from the **next** candle, so no lot opens and closes inside one candle |
 | Fill time | Gap fills: the candle's observed open time. Touch fills: the candle end, which is when the fill is known |
 
@@ -134,7 +135,9 @@ OHLC alone.
 - **Admission** (each open, for empty levels of the active grid): requires
   `equity − lot margin − other reservations − commission ≥ level_size × limit / leverage`,
   with equity marked at the observed open. Admitted entries reserve that margin.
-- **Fill:** the check is repeated at the fill. Open lots are marked at the fill
+- **Fill:** the check is repeated at the fill. Existing lots' financing is first
+  accrued up to the fill time, and each interval is charged once even when several
+  fills share a timestamp. Open lots are marked at the fill
   price, and the other quote side is estimated from the candle's observed opening
   spread, so only information available at that moment is used. The immediate
   spread loss is included. A failed entry is `rejected`, and its level is retried
@@ -165,7 +168,9 @@ Reports add the following to the standard table and JSON:
 - trading costs (`trading_costs` = spread estimate + slippage + commission +
   financing, also split into `commission_costs` and `financing_costs`)
 - peak exposure (`peak_open_units`, `peak_open_lots`, `peak_open_notional_usd`,
-  `peak_committed_units`, `peak_used_margin`)
+  `peak_committed_units`, `peak_used_margin`). Each is its own running maximum.
+  Notional is size × entry price, so a lot replaced at a higher price can raise the
+  peak notional without raising peak units
 - max drawdown on observed open/close marks
 - ending inventory (open lots, working orders, pending activation)
 - order counts, activations, direction changes, and grid/flatten exits
