@@ -23,10 +23,17 @@ from backtest_fixtures import hourly_candles
 from trading_bot.backtesting import cli, runner
 from trading_bot.backtesting.adapters import GRID
 from trading_bot.backtesting.engine import SimulationConfig
-from trading_bot.backtesting.grid import GridBook, grid_pnl, grid_statistics, simulate_grid
-from trading_bot.backtesting.models import Candle, OHLC
+from trading_bot.backtesting.grid import (
+    GridBook,
+    automatic_bounds,
+    grid_pnl,
+    grid_statistics,
+    run_grid,
+    simulate_grid,
+)
+from trading_bot.backtesting.models import Candle, Dataset, OHLC
 from trading_bot.backtesting.study_data import FETCH_START, START, END, write_snapshot
-from trading_bot.strategies.grid import Ema, GridStrategy
+from trading_bot.strategies.grid import AutoGridStrategy, Ema, GridStrategy
 
 from test_donchian_cli import GUARD, candle as half_hour
 from test_unified_backtesting import NOW, SharedDataTests
@@ -588,6 +595,223 @@ class ReviewRegressionTests(unittest.TestCase):
                              .execution.config.size, D(100))
 
 
+# Automatic bounds: scored from hour 10 with EMA(3) and a 6-candle lookback, so
+# the bounds window is hours 4-9 and the EMA warm-up is hours 7-9 only.
+AUTO_START, AUTO_END = at(10), at(13)
+AUTO_CANDLES = (
+    bar(0, "1.1000", "1.1050", "1.0950", "1.1000"),  # Older extremes: outside the window.
+    flat(1, "1.1000"), flat(2, "1.1000"), flat(3, "1.1000"),
+    flat(4, "1.1000"), flat(5, "1.1000"),
+    # Lowest low: bid 1.09794 / ask 1.09806 -> midpoint estimate 1.09800.
+    quoted(6, bid=("1.09990", "1.09995", "1.09794", "1.09990"),
+           ask=("1.10010", "1.10015", "1.09806", "1.10010")),
+    flat(7, "1.1000"),
+    # Highest high: bid 1.10193 / ask 1.10207 -> midpoint estimate 1.10200.
+    quoted(8, bid=("1.09990", "1.10193", "1.09985", "1.10040"),
+           ask=("1.10010", "1.10207", "1.10005", "1.10060")),
+    bar(9, "1.1005", "1.1010", "1.1004", "1.1010"),
+    # Scored: a new high, then a new low that fills the long grid and flips to short.
+    bar(10, "1.1010", "1.1060", "1.1008", "1.1050"),
+    bar(11, "1.1040", "1.1041", "1.0940", "1.0950"),
+    flat(12, "1.0955"),
+)
+AUTO_ARGS = ["--strategy", "grid", "--ema-period", "3", "--grid-intervals", "8",
+             "--time-frame", "HOUR", "--start", AUTO_START.isoformat(),
+             "--end", AUTO_END.isoformat()]
+EXPECTED_LEVELS = [D("1.09800") + D("0.0005") * i for i in range(9)]
+
+
+def auto_provider(candles=AUTO_CANDLES):
+    from unittest.mock import Mock
+
+    rows = tuple(replace(c, source="dukascopy") for c in candles)
+    source = Mock()
+    source.fetch.return_value = Dataset(
+        rows, rows[0].timestamp, AUTO_END, "dukascopy", "EURUSD", "HOUR",
+        {"source_resolution": "HOUR", "complete_provider_buckets": True,
+         "no_quote_ranges": []})
+    return source
+
+
+def run_cli(argv, root, source):
+    """Run the unified CLI on a mocked provider; return (exit code, stdout, report)."""
+    with ExitStack() as stack:
+        stack.enter_context(patch("trading_bot.backtesting.data.provider", return_value=source))
+        out = stack.enter_context(redirect_stdout(io.StringIO()))
+        err = stack.enter_context(redirect_stderr(io.StringIO()))
+        output = Path(root, "out", str(len(list(Path(root).glob("out/*")))))
+        code = cli.main([*argv, "--cache-dir", str(Path(root, "cache")),
+                         "--output-dir", str(output)], now=NOW)
+    reports = list(output.glob("*/report.json"))
+    report = json.loads(reports[0].read_text()) if reports else None
+    return code, out.getvalue() + err.getvalue(), report
+
+
+class AutomaticBoundsTests(unittest.TestCase):
+    def test_end_to_end_bounds_come_only_from_the_lookback_window(self):
+        source = auto_provider()
+        with tempfile.TemporaryDirectory() as root:
+            code, text, report = run_cli([*AUTO_ARGS, "--grid-lookback", "6"], root, source)
+            self.assertEqual(code, 0, text)
+            manual_code, _, manual = run_cli(
+                [*AUTO_ARGS, "--grid-lower", "1.09800", "--grid-upper", "1.10200"],
+                root, source)
+            self.assertEqual(manual_code, 0)
+        source.fetch.assert_called_once()  # Both modes share one cached download.
+        bounds = report["grid"]["bounds"]
+        # Hand-computed: midpoint of hour 6's bid/ask lows and hour 8's bid/ask highs.
+        # Neither hour 0 (outside the window) nor the scored 1.1060 high or 1.0940
+        # low affects them.
+        self.assertEqual((D(bounds["lower"]), D(bounds["upper"])),
+                         (D("1.09800"), D("1.10200")))
+        self.assertEqual(bounds["mode"], "automatic")
+        self.assertEqual(bounds["basis"], "midpoint estimate: mean of bid and ask lows/highs")
+        self.assertEqual((bounds["lookback_candles"], bounds["window_candles"]), (6, 6))
+        self.assertEqual((bounds["window_start"], bounds["window_end"]),
+                         (at(4).isoformat(), at(10).isoformat()))
+        self.assertEqual((bounds["lowest_low_candle"], bounds["highest_high_candle"]),
+                         (at(6).isoformat(), at(8).isoformat()))
+        self.assertEqual((bounds["ema_warmup_candles"], bounds["level_count"]), (3, 9))
+        self.assertEqual([D(v) for v in report["grid"]["levels"]], EXPECTED_LEVELS)
+        self.assertEqual(report["data"]["warmup_candles"], 6)  # Loaded for the bounds.
+        self.assertIn("Grid bounds:             1.09800 to 1.10200 (automatic, midpoint "
+                      "low/high of last 6 candles", text)
+        self.assertIn("EMA warm-up:             3 candles", text)
+        # Levels stay fixed through the long -> short direction change.
+        activations = [e for e in report["grid"]["activations"] if e["action"] == "ACTIVATE"]
+        self.assertEqual([e["direction"] for e in activations], ["BUY", "SELL"])
+        self.assertEqual([D(v) for v in activations[0]["entry_levels"]],
+                         EXPECTED_LEVELS[5::-1])
+        self.assertEqual([D(v) for v in activations[1]["entry_levels"]], EXPECTED_LEVELS[1:])
+        orders = report["grid"]["orders"]
+        self.assertTrue({D(o["price"]) for o in orders if o["price"]} <= set(EXPECTED_LEVELS))
+        self.assertTrue({o["side"] for o in orders if o["grid_id"] == 2} == {"SELL"})
+        stats = report["statistics"]
+        self.assertEqual((stats["direction_changes"], stats["flatten_exits"]), (1, 5))
+        # The six-candle lookback does not shift the EMA: it warms on hours 7-9 only.
+        # (Seeding on hours 4-9 would give 1.1028125 at the first scored close.)
+        self.assertEqual(D(report["decisions"][0]["ema"]), D("1.10275"))
+        for key in ("decisions", "trades", "equity_curve", "statistics"):
+            self.assertEqual(report[key], manual[key], key)
+        self.assertEqual(report["grid"]["orders"], manual["grid"]["orders"])
+        # Inputs and results of the automatic bounds are part of the reproducible record.
+        record = report["reproducibility"]["configuration"]
+        self.assertEqual(record["parameters"]["grid_lookback"], 6)
+        self.assertIsNone(record["parameters"]["grid_lower"])
+        self.assertEqual(record["grid_bounds"], bounds)
+        self.assertNotEqual(report["reproducibility"]["configuration_sha256"],
+                            manual["reproducibility"]["configuration_sha256"])
+        self.assertEqual(manual["grid"]["bounds"]["mode"], "manual")
+
+    def test_manual_bounds_keep_existing_mode_and_validation(self):
+        source = auto_provider()
+        with tempfile.TemporaryDirectory() as root:
+            code, _, report = run_cli(
+                [*AUTO_ARGS, "--grid-lower", "1.0990", "--grid-upper", "1.1030"], root, source)
+            self.assertEqual(code, 0)
+            bad, text, _ = run_cli(
+                [*AUTO_ARGS, "--grid-lower", "1.1030", "--grid-upper", "1.0990"], root, source)
+        bounds = report["grid"]["bounds"]
+        self.assertEqual((bounds["mode"], bounds["lookback_candles"], bounds["window_start"]),
+                         ("manual", None, None))
+        self.assertEqual((D(bounds["lower"]), D(bounds["first_level"])),
+                         (D("1.0990"), D("1.09900")))
+        self.assertEqual(report["data"]["warmup_candles"], 3)  # EMA warm-up only.
+        self.assertEqual(bad, 1)
+        self.assertIn("Grid prices require 0 < lower < upper", text)
+
+    def test_single_bound_is_an_argument_error_before_data_access(self):
+        for given in (["--grid-lower", "1.15"], ["--grid-upper", "1.19"]):
+            with self.subTest(given=given), ExitStack() as stack:
+                fetch = stack.enter_context(patch("trading_bot.backtesting.runner.load_history"))
+                err = stack.enter_context(redirect_stderr(io.StringIO()))
+                with self.assertRaises(SystemExit) as raised:
+                    cli.main(["--strategy", "grid", *given], now=NOW)
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn("pass both for manual bounds, or neither for automatic bounds",
+                              err.getvalue())
+                fetch.assert_not_called()
+
+    def test_insufficient_lookback_explains_how_to_adjust(self):
+        source = auto_provider()
+        with tempfile.TemporaryDirectory() as root:
+            code, text, report = run_cli([*AUTO_ARGS, "--grid-lookback", "20"], root, source)
+        self.assertEqual(code, 1)
+        self.assertIsNone(report)
+        self.assertIn("Automatic grid bounds need 20 completed HOUR candles ending at or before "
+                      "2026-09-01T10:00:00+00:00, but only 10 are available", text)
+        self.assertIn("smaller --grid-lookback, a later --start, or set both --grid-lower", text)
+        # Direct API: the same check, independent of the loader.
+        with self.assertRaisesRegex(ValueError, "need 11 completed"):
+            run_grid(AUTO_CANDLES, AutoGridStrategy(11, ema_period=3), SimulationConfig(),
+                     start=AUTO_START, end=AUTO_END)
+
+    def test_range_that_collapses_after_tick_rounding_is_rejected(self):
+        narrow = [bar(i, "1.10002", "1.10004", "1.10000", "1.10002", half=D(0))
+                  for i in range(4)]
+        with self.assertRaisesRegex(ValueError, r"(?s)1\.10000 to 1\.10004.*cannot form 10 "
+                                    r"intervals.*distinct after rounding.*fewer "
+                                    r"--grid-intervals"):
+            automatic_bounds(narrow, AutoGridStrategy(3, ema_period=2), at(3))
+        # The same range is valid with few enough intervals (4 ticks -> 4 intervals).
+        grid, record = automatic_bounds(narrow, AutoGridStrategy(3, ema_period=2,
+                                                                 grid_intervals=4), at(3))
+        self.assertEqual(grid.levels, tuple(D("1.10000") + D("0.00001") * i for i in range(5)))
+        flat_range = [flat(i, "1.1000") for i in range(4)]
+        with self.assertRaisesRegex(ValueError, "0 < lower < upper"):
+            automatic_bounds(flat_range, AutoGridStrategy(3, ema_period=2), at(3))
+        # Through the CLI the same failure is a clear exit-1 error, after loading.
+        source = auto_provider([replace(c, timestamp=at(i), open_time=at(i))
+                                for i, c in enumerate(narrow * 4)])
+        with tempfile.TemporaryDirectory() as root:
+            code, text, _ = run_cli(
+                ["--strategy", "grid", "--ema-period", "2", "--grid-lookback", "3",
+                 "--start", at(10).isoformat(), "--end", at(13).isoformat()], root, source)
+        self.assertEqual(code, 1)
+        self.assertIn("cannot form 10 intervals", text)
+
+    def test_lookback_longer_than_ema_period_does_not_shift_signals(self):
+        candles = hourly_candles()[:150]
+        start = candles[100].timestamp
+        auto = run_grid(candles, AutoGridStrategy(80, ema_period=12, grid_intervals=20),
+                        SimulationConfig(), start=start, end=candles[-1].end)
+        bounds = auto.bounds
+        self.assertEqual((bounds["window_candles"], bounds["ema_warmup_candles"]), (80, 12))
+        self.assertEqual(bounds["window_start"], candles[20].timestamp)
+        self.assertEqual(bounds["window_end"], start)
+        manual = GridStrategy(bounds["lower"], bounds["upper"], ema_period=12,
+                              grid_intervals=20)
+        reference = simulate_grid(candles[88:], manual, SimulationConfig(), start=start,
+                                  end=candles[-1].end)
+        self.assertEqual(auto.decisions, reference.decisions)
+        self.assertEqual(auto.ledger.orders, reference.ledger.orders)
+        self.assertEqual(auto.equity_curve, reference.equity_curve)
+        # Seeding the EMA on the whole lookback would give different signals.
+        leaked = simulate_grid(candles[20:], manual, SimulationConfig(), start=start,
+                               end=candles[-1].end)
+        self.assertNotEqual([d["ema"] for d in leaked.decisions],
+                            [d["ema"] for d in auto.decisions])
+
+    def test_plan_loads_history_for_the_longer_of_ema_and_lookback(self):
+        def plan(*argv):
+            args = cli.build_parser().parse_args(["--strategy", "grid", *argv])
+            return runner.plan(cli.request_from_args(args), now=NOW)
+
+        p = plan()
+        self.assertIsInstance(p.strategy, AutoGridStrategy)
+        self.assertEqual((p.strategy.grid_lookback, p.strategy.warmup,
+                          p.strategy.minimum_history), (100, 100, 50))
+        self.assertEqual(plan("--ema-period", "150").strategy.warmup, 150)
+        self.assertEqual(plan("--grid-lookback", "20", "--ema-period", "8").strategy.warmup, 20)
+        self.assertEqual(p.specification["parameters"]["grid_lookback"], 100)
+        self.assertIsInstance(plan("--grid-lower", "1.1", "--grid-upper", "1.2").strategy,
+                              GridStrategy)
+        with patch("trading_bot.backtesting.runner.load_history") as fetch:
+            runner.load(plan("--grid-lookback", "120", "--ema-period", "30"))
+        self.assertEqual(fetch.call_args.args[5], 120)  # History to load.
+        self.assertEqual(fetch.call_args.kwargs["required_warmup"], 30)  # EMA minimum.
+
+
 def oscillating_snapshot(path):
     """30m snapshot fixture: flat warm-up, then a repeating 4-hour sawtooth above 1.1000."""
     wave = (0, 6, 2, 8, 4, 10, 6, 12)
@@ -626,8 +850,9 @@ class GridCliTests(unittest.TestCase):
 
     def test_invalid_combinations_fail_before_data_access(self):
         bad = (
-            ["--strategy", "grid"],
             ["--strategy", "grid", "--grid-lower", "1.1"],
+            ["--strategy", "grid", "--grid-upper", "1.2"],
+            [*GRID_ARGS, "--grid-lookback", "50"],  # Lookback only for automatic bounds.
             [*GRID_ARGS, "--size", "50"],
             [*GRID_ARGS, "--size", "100"],  # Even when equal to --level-size.
             [*GRID_ARGS, "--execution-model", "continuous"],
@@ -653,7 +878,8 @@ class GridCliTests(unittest.TestCase):
                 snap.assert_not_called()
         for argv in ([*GRID_ARGS, "--ema-period", "1"],
                      [*GRID_ARGS, "--grid-upper", "1.0970"],
-                     [*GRID_ARGS, "--max-position", "50"]):
+                     [*GRID_ARGS, "--max-position", "50"],
+                     ["--strategy", "grid", "--grid-lookback", "0"]):
             with self.subTest(argv=argv), redirect_stderr(io.StringIO()) as err, \
                     patch("trading_bot.backtesting.runner.load_history") as fetch:
                 self.assertEqual(cli.main(argv, now=NOW), 1)

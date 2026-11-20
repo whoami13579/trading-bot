@@ -29,7 +29,7 @@ and cached the data; a second run read the cache and reproduced every value:
 | --- | --- |
 | Candles / warm-up | 528 scored 1H candles, 50 warm-up; 0 missing or unexplained intervals |
 | `data_sha256` | `ccb89368919e88c37f0e149900236db97994b7465cbbea9533c035f69fcab37e` |
-| `configuration_sha256` | `fb429a367d5aaf075d1c564908a5ff11c85b9525aeff8e4799559df89c607f4d` |
+| `configuration_sha256` | `017855023bf3ec984da53a3bd5992e418cf46958cb2ca7b19b5c08eeb1161e5e` (the record includes `grid_bounds` since automatic bounds were added) |
 | Closed lots | 53 (21 grid exits, 32 direction-change flattens), 30 direction changes |
 | Net / gross P&L | −$0.6120 / −$0.2665 on $1,000 |
 | Max drawdown | $1.7460 (0.1746%) |
@@ -52,12 +52,45 @@ uv run trading-bot-backtest --strategy grid --data-source snapshot \
   --grid-lower 1.1500 --grid-upper 1.1900 --grid-intervals 40
 ```
 
+## Automatic-bounds EURUSD example
+
+The same run with no `--grid-lower`/`--grid-upper`, so the bounds are measured from
+the 100 completed hourly candles before the start:
+
+```bash
+uv run trading-bot-backtest --strategy grid --symbol EURUSD --time-frame HOUR \
+  --data-source dukascopy --start 2025-09-01 --end 2025-10-01 \
+  --ema-period 50 --grid-lookback 100 --grid-intervals 40 \
+  --level-size 100 --max-position 500 --slippage-pips 0.1
+```
+
+Verified on 2026-11-20 with Dukascopy bid/ask data. A cached rerun reproduced every value:
+
+| Item | Value |
+| --- | --- |
+| Resolved bounds | **1.15741 to 1.17090** (midpoint estimate), 41 levels |
+| Bounds window | 100 1H candles, [2025-08-25T20:00Z, 2025-09-01T00:00Z); lowest low 2025-08-27 11:00, highest high 2025-08-29 15:00 |
+| EMA warm-up | 50 candles; decisions identical to the manual-bounds run above |
+| `data_sha256` | `688b751ab450a48df1aa03f2d9366871d9868c539d5fe4550e55360a5eca3148` (100 loaded warm-up candles) |
+| `configuration_sha256` | `8f2341b0edb9336e5a7768128d53594b839996cfd7c9965d3bdfcd6eb9b95889` |
+| Closed lots | 49 (30 grid exits, 19 flattens), 30 direction changes |
+| Net / gross P&L | −$1.2900 / −$1.0495 |
+| Max drawdown | $2.6070 (0.2607%) |
+| Peak exposure | 500 EUR in 5 lots ($584.776 entry notional) |
+
+September 2025 traded up to about 1.1919, above the measured upper bound. Prices
+outside the bounds don't move the levels: a long grid simply has no entry levels
+left once the reference is below the lower bound (and a short grid none above
+the upper bound). The bounds describe the previous 100 hours; they don't predict
+the scored month.
+
 ## Parameters
 
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `--ema-period` | 50 | EMA lookback in completed candles (≥ 2) |
-| `--grid-lower`, `--grid-upper` | required | Fixed price bounds, `0 < lower < upper` |
+| `--grid-lower`, `--grid-upper` | automatic | Manual fixed bounds, `0 < lower < upper`. Give both or neither |
+| `--grid-lookback` | 100 | Automatic bounds only: completed `--time-frame` candles used to measure them |
 | `--grid-intervals` | 10 | Evenly spaced intervals (1–1000); there are `intervals + 1` levels |
 | `--level-size` | 100 | EUR base units per grid level (replaces `--size`, which is rejected) |
 | `--max-position` | 500 | Cap on open-lot units + working-entry units, in EUR (≥ level size) |
@@ -69,14 +102,50 @@ uv run trading-bot-backtest --strategy grid --data-source snapshot \
 | `--financing-usd-per-unit-day` | unmodeled | Linear debit per lot unit per calendar day |
 | `--initial-balance`, `--leverage` | 1000, 1 | USD cash; simulated collateral ratio |
 
-Missing bounds, any explicit `--size` (even one equal to `--level-size`),
-`--cost-case`, another model or another strategy's
-parameters exit 2 before data access. Invalid values (`--ema-period 1`,
-`upper <= lower`, `--max-position` below `--level-size`, levels that collapse
-after rounding) exit 1 with `Backtest failed: …`.
+Exit 2 before data access:
+- only one of `--grid-lower`/`--grid-upper`
+- `--grid-lookback` together with manual bounds
+- any explicit `--size` (even one equal to `--level-size`)
+- `--cost-case`, another model, or another strategy's parameters
+
+Exit 1 with `Backtest failed: …`:
+- invalid values (`--ema-period 1`, `--grid-lookback 0`, `upper <= lower`,
+  `--max-position` below `--level-size`, levels that collapse after rounding)
+- an automatic lookback that the data can't supply
+- an automatic range that can't form distinct levels
+
+These errors say which option to change.
 
 Levels are `lower + i × (upper − lower) / intervals`, rounded to the 0.00001
 EURUSD tick (half-even), and never move during a run.
+
+## Grid bounds
+
+- **Manual mode** (`--grid-lower` and `--grid-upper`): the bounds are used as given.
+- **Automatic mode** (neither bound): the bounds are the lowest low and highest high
+  of the last `--grid-lookback` completed candles of the selected timeframe whose
+  end time is at or before `--start`.
+  - With bid/ask data, each candle's low (high) is the mean of its bid and ask lows
+    (highs). That *estimates* the midpoint range, because the intrabar midpoint isn't
+    observed.
+  - With indicative data (yfinance), the source OHLC is used.
+- Bounds are resolved once, before the first scored candle, and go through the
+  same tick rounding and validation as manual bounds. They never change, including
+  across EMA direction changes. Scored candles (and any newer high or low) never
+  affect them.
+- **Errors:**
+  - Fewer than `--grid-lookback` candles before the start: the run fails and
+    suggests a smaller lookback, a later start or manual bounds.
+  - A range too narrow for `--grid-intervals` distinct ticks: the run suggests
+    fewer intervals, a longer lookback or timeframe, or manual bounds.
+- **Data loading:** the loader fetches `max(--ema-period, --grid-lookback)` completed
+  candles before the start, but the EMA still warms up on exactly the last
+  `--ema-period` of them. Its signals are identical to a manual run on the same data.
+- **Report:** `report.json` → `grid.bounds` records the mode, resolved lower and upper
+  bounds, basis, lookback count, window start and end (end exclusive), candle
+  count, the candles holding the extremes, first and last levels, and the EMA
+  warm-up. The same record is part of the reproducibility configuration (and its
+  SHA256). The terminal report prints `Grid bounds` and `EMA warm-up`.
 
 ## Direction rule
 

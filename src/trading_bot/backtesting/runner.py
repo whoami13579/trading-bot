@@ -82,13 +82,9 @@ def plan(request: BacktestRequest, *, now=None) -> Plan:
         raise PlanError(
             f"{', '.join(sorted(unknown))} not supported by --strategy {adapter.key}"
         )
-    missing = [
-        p.flags[0]
-        for p in adapter.parameters
-        if p.required and request.parameters.get(p.dest) is None
-    ]
-    if missing:
-        raise PlanError(f"--strategy {adapter.key} requires {', '.join(missing)}")
+    problem = adapter.check(request.parameters) if adapter.check else None
+    if problem:
+        raise PlanError(problem)
     strategy = adapter.build(**request.parameters)
     grid = adapter.execution == "grid"
     if grid:
@@ -188,10 +184,14 @@ def plan(request: BacktestRequest, *, now=None) -> Plan:
 def load(plan: Plan):
     r = plan.request
     warmup = plan.strategy.warmup
+    # A strategy may load more history than it strictly needs (automatic grid
+    # bounds); a shortfall beyond its minimum is then reported by the strategy.
+    required = getattr(plan.strategy, "minimum_history", None)
     if plan.data_source == "snapshot":
         # Research windows decide first at the first scored close, so one fewer
         # prior bar suffices; continuous mode primes the first scored open.
-        required = warmup - 1 if plan.execution.name == "research" else warmup
+        if required is None:
+            required = warmup - 1 if plan.execution.name == "research" else warmup
         return load_snapshot(r.snapshot, r.symbol, plan.time_frame, plan.start, plan.end,
                              warmup, required_warmup=required)
     return load_history(
@@ -204,6 +204,7 @@ def load(plan: Plan):
         Cache(r.cache_dir, refresh=r.refresh_data),
         allow_gaps=r.allow_data_gaps,
         now=plan.now,
+        required_warmup=required,
     )
 
 
@@ -238,6 +239,7 @@ def execute(plan: Plan, dataset=None):
     result, stats = plan.execution.simulate(dataset.candles, plan.strategy, plan.start,
                                             plan.end)
     record = configuration_record(plan, dataset)
+    record.update(plan.execution.reproducibility(result))
     return build_report(
         result,
         stats,

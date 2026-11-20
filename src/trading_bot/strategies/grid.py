@@ -14,6 +14,10 @@ Grid: ``grid_intervals`` evenly spaced intervals between ``grid_lower`` and
 - Short grid: sell limits at levels strictly above the reference close; each
   filled lot exits with a buy limit one level lower.
 
+Bounds are either given explicitly (``GridStrategy``) or measured from the
+completed candles before the start (``AutoGridStrategy``); either way the levels
+are computed once and stay fixed for the whole run.
+
 Order simulation, funding and exposure limits live in
 ``trading_bot.backtesting.grid``; this module only answers pure questions.
 """
@@ -152,3 +156,54 @@ class GridStrategy:
     @staticmethod
     def exit_level(direction, index):
         return index + 1 if direction == "BUY" else index - 1
+
+
+DEFAULT_LOOKBACK = 100
+
+
+@dataclass(frozen=True)
+class AutoGridStrategy:
+    """A grid whose bounds come from the ``grid_lookback`` candles before the start.
+
+    It only describes the request: ``resolve`` turns measured bounds into an
+    ordinary ``GridStrategy`` (same tick rounding and validation), which is the
+    only object the simulator ever runs. ``warmup`` is the completed history to
+    load (enough for both the bounds and the EMA); the EMA itself still warms up
+    on exactly ``ema_period`` candles.
+    """
+
+    grid_lookback: int = DEFAULT_LOOKBACK
+    ema_period: int = 50
+    grid_intervals: int = 10
+    level_size: Decimal = Decimal(100)
+    max_position: Decimal = Decimal(500)
+    name: str = "Grid"
+
+    def __post_init__(self):
+        if type(self.grid_lookback) is not int or self.grid_lookback < 1:
+            raise ValueError("Grid lookback must be a positive integer number of candles")
+        # Validate every non-bound parameter exactly as a manual grid would.
+        probe = self.resolve(Decimal(1), Decimal(2))
+        object.__setattr__(self, "level_size", probe.level_size)
+        object.__setattr__(self, "max_position", probe.max_position)
+
+    @property
+    def warmup(self):
+        """Completed candles to load before the start (bounds and EMA)."""
+        return max(self.ema_period, self.grid_lookback)
+
+    @property
+    def minimum_history(self):
+        """Fewer candles still let the EMA warm up; the bounds check reports it."""
+        return self.ema_period
+
+    def resolve(self, grid_lower, grid_upper):
+        return GridStrategy(
+            grid_lower,
+            grid_upper,
+            ema_period=self.ema_period,
+            grid_intervals=self.grid_intervals,
+            level_size=self.level_size,
+            max_position=self.max_position,
+            name=self.name,
+        )

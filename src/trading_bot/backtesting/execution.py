@@ -28,7 +28,7 @@ from .engine import (
     run,
     statistics,
 )
-from .grid import ending_inventory, grid_pnl, grid_statistics, simulate_grid
+from .grid import ending_inventory, grid_pnl, grid_statistics, run_grid
 from .study_engine import COSTS, CostCase, research_config, simulate_window
 
 EXECUTION_MODELS = ("continuous", "research", "grid")
@@ -50,6 +50,9 @@ class SinglePositionReport:
         return [asdict(position)] if position else []
 
     def extras(self, result):
+        return {}
+
+    def reproducibility(self, result):
         return {}
 
 
@@ -213,7 +216,7 @@ class GridExecution(ContinuousExecution):
     )
 
     def simulate(self, candles, strategy, start, end):
-        result = simulate_grid(candles, strategy, self.config, start=start, end=end)
+        result = run_grid(candles, strategy, self.config, start=start, end=end)
         return result, grid_statistics(result)
 
     def assumed(self, dataset):
@@ -237,6 +240,10 @@ class GridExecution(ContinuousExecution):
             super().assumptions(),
             direction="EMA of completed midpoint closes (source close without bid/ask); "
             "above selects long, below short, equal keeps the current grid",
+            bounds="manual --grid-lower/--grid-upper, or automatic: lowest low and "
+            "highest high of the last --grid-lookback completed candles ending at or "
+            "before the start (bid/ask: mean of bid and ask lows/highs, a midpoint "
+            "estimate); levels fixed for the run",
             activation="direction changes cancel working orders at the signal close, "
             "flatten lots at the next observed open, then seed the new grid relative to "
             "the signal close",
@@ -269,6 +276,7 @@ class GridExecution(ContinuousExecution):
         strategy = result.ledger.strategy
         return {
             "grid": {
+                "bounds": result.bounds,
                 "levels": list(strategy.levels),
                 "ema_period": strategy.ema_period,
                 "level_size": strategy.level_size,
@@ -280,3 +288,7 @@ class GridExecution(ContinuousExecution):
                 "orders": [asdict(o) for o in result.ledger.orders],
             }
         }
+
+    def reproducibility(self, result):
+        # Measured bounds depend on the data window, so they are part of the record.
+        return {"grid_bounds": result.bounds}

@@ -87,6 +87,10 @@ uv run trading-bot-backtest --strategy grid --symbol EURUSD --time-frame HOUR \
   --start 2025-09-01 --end 2025-10-01 --ema-period 50 \
   --grid-lower 1.1500 --grid-upper 1.1900 --grid-intervals 40 \
   --level-size 100 --max-position 500 --slippage-pips 0.1
+# Automatic bounds: lowest low / highest high of the 100 1H candles before --start.
+uv run trading-bot-backtest --strategy grid --symbol EURUSD --time-frame HOUR \
+  --start 2025-09-01 --end 2025-10-01 --ema-period 50 --grid-lookback 100 \
+  --grid-intervals 40 --level-size 100 --max-position 500 --slippage-pips 0.1
 ```
 
 The grid strategy picks a long or short fixed-price grid from an EMA of completed

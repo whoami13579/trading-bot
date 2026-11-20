@@ -59,7 +59,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from decimal import Decimal
 
-from trading_bot.strategies.grid import Ema, GridStrategy
+from trading_bot.strategies.grid import AutoGridStrategy, Ema, GridStrategy
 from .engine import PIP, ZERO, SimulationConfig, Trade, summarize
 from .models import Candle, DataError
 from .timeframes import normalize
@@ -656,6 +656,7 @@ class GridResult:
     trade_records: list[dict] = field(default_factory=list)
     last_candle: Candle | None = None
     pending: dict | None = None
+    bounds: dict | None = None  # How the fixed levels were obtained (run_grid).
 
 
 def simulate_grid(candles, strategy: GridStrategy, config: SimulationConfig, *, start,
@@ -717,6 +718,90 @@ def simulate_grid(candles, strategy: GridStrategy, config: SimulationConfig, *, 
         curve.append(final)
     return GridResult(config, strategy.name, start, end, book, curve, decisions, count,
                       book.trade_records, last, pending)
+
+
+def _range_prices(candle):
+    """Midpoint low/high estimate from bid/ask, otherwise the source OHLC."""
+    if candle.bid is not None:
+        return (candle.bid.low + candle.ask.low) / 2, (candle.bid.high + candle.ask.high) / 2
+    return candle.prices.low, candle.prices.high
+
+
+def automatic_bounds(candles, strategy: AutoGridStrategy, start):
+    """Resolve bounds from the last ``grid_lookback`` candles ending by ``start``.
+
+    Lower = lowest low, upper = highest high of that window. With bid/ask data
+    each candle's low (high) is the mean of its bid and ask lows (highs): an
+    estimate of the midpoint range, since the true intrabar midpoint is not
+    observed. Indicative data uses the source OHLC. Returns the resolved
+    ``GridStrategy`` and a record of the inputs and results.
+    """
+    lookback = strategy.grid_lookback
+    prior = [c for c in candles if c.end <= start]
+    timeframe = candles[0].timeframe if candles else "candle"
+    if len(prior) < lookback:
+        raise DataError(
+            f"Automatic grid bounds need {lookback} completed {timeframe} candles ending at "
+            f"or before {start.isoformat()}, but only {len(prior)} are available. Use a "
+            "smaller --grid-lookback, a later --start, or set both --grid-lower and "
+            "--grid-upper."
+        )
+    window = prior[-lookback:]
+    ranges = [_range_prices(c) for c in window]
+    lows = [low for low, _ in ranges]
+    highs = [high for _, high in ranges]
+    lower, upper = min(lows), max(highs)
+    try:
+        grid = strategy.resolve(lower, upper)
+    except ValueError as exc:
+        raise ValueError(
+            f"Automatic grid bounds {lower} to {upper} from the last {lookback} "
+            f"{timeframe} candles cannot form {strategy.grid_intervals} intervals of "
+            f"distinct 0.00001-tick levels ({exc}). Use fewer --grid-intervals, a longer "
+            "--grid-lookback or a larger --time-frame for a wider range, or set both "
+            "--grid-lower and --grid-upper."
+        ) from None
+    record = {
+        "mode": "automatic",
+        "lookback_candles": lookback,
+        "basis": "midpoint estimate: mean of bid and ask lows/highs"
+        if window[0].bid is not None
+        else "indicative source OHLC",
+        "lower": lower,
+        "upper": upper,
+        "window_start": window[0].timestamp,
+        "window_end": window[-1].end,
+        "window_candles": len(window),
+        "lowest_low_candle": window[lows.index(lower)].timestamp,
+        "highest_high_candle": window[highs.index(upper)].timestamp,
+    }
+    return grid, record
+
+
+def run_grid(candles, strategy, config: SimulationConfig, *, start, end) -> GridResult:
+    """Resolve fixed levels once, then simulate with exactly the EMA warm-up.
+
+    Extra history loaded for automatic bounds never reaches the EMA: only the
+    last ``ema_period`` candles before ``start`` (plus the scored candles) are
+    simulated, exactly as for manual bounds.
+    """
+    candles = normalize(candles, completed_before=end)
+    if isinstance(strategy, AutoGridStrategy):
+        grid, bounds = automatic_bounds(candles, strategy, start)
+    else:
+        grid = strategy
+        bounds = {"mode": "manual", "lookback_candles": None, "basis": None,
+                  "lower": grid.grid_lower, "upper": grid.grid_upper,
+                  "window_start": None, "window_end": None, "window_candles": 0,
+                  "lowest_low_candle": None, "highest_high_candle": None}
+    levels = grid.levels
+    bounds.update(first_level=levels[0], last_level=levels[-1], level_count=len(levels),
+                  ema_warmup_candles=grid.warmup)
+    prior = [c for c in candles if c.end <= start]
+    scored = [c for c in candles if c.end > start]
+    result = simulate_grid(prior[-grid.warmup:] + scored, grid, config, start=start, end=end)
+    result.bounds = bounds
+    return result
 
 
 def grid_pnl(result: GridResult) -> dict:

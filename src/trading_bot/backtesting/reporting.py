@@ -306,7 +306,19 @@ def report_lines(report, path=None):
         inventory = grid["ending_inventory"]
         levels = grid["levels"]
         pending = inventory["pending_activation"]
+        bounds = grid["bounds"]
+        if bounds["mode"] == "automatic":
+            basis = "midpoint" if bounds["basis"].startswith("midpoint") else "indicative"
+            source = (
+                f"automatic, {basis} low/high of last {bounds['lookback_candles']} "
+                f"candles [{bounds['window_start'].isoformat()}, "
+                f"{bounds['window_end'].isoformat()})"
+            )
+        else:
+            source = "manual"
         lines += [
+            ("Grid bounds", f"{bounds['lower']} to {bounds['upper']} ({source})"),
+            ("EMA warm-up", f"{bounds['ema_warmup_candles']} candles"),
             (
                 "Grid levels",
                 f"{len(levels)} from {levels[0]} to {levels[-1]}, "

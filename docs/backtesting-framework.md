@@ -9,6 +9,7 @@ simulation only: it never authenticates, reads credentials or submits orders.
 uv run trading-bot-backtest --strategy hma --symbol EURUSD --time-frame HOUR --size 100
 uv run trading-bot-backtest --strategy donchian --symbol EURUSD --time-frame HOUR --size 100
 uv run trading-bot-backtest --strategy grid --grid-lower 1.15 --grid-upper 1.19 --start 2025-09-01 --end 2025-10-01
+uv run trading-bot-backtest --strategy grid --grid-lookback 100 --start 2025-09-01 --end 2025-10-01
 ```
 
 ## Problems in the previous architecture
@@ -124,7 +125,7 @@ trading_bot.backtesting.cli`). `--strategy` defaults to `hma`, so earlier
 | `--cost-case` | `base` | research model only: `base`, `high`, `financing` |
 | `--hma-period`, `--direction` | 16, `BUY` | HMA only |
 | `--entry-lookback`, `--exit-lookback` | 20, 10 | Donchian only |
-| `--ema-period`, `--grid-lower`, `--grid-upper`, `--grid-intervals`, `--level-size`, `--max-position` | 50, required, required, 10, 100, 500 | grid only; see [grid backtesting](grid-backtesting.md) |
+| `--ema-period`, `--grid-lower`, `--grid-upper`, `--grid-lookback`, `--grid-intervals`, `--level-size`, `--max-position` | 50, automatic, automatic, 100, 10, 100, 500 | grid only: both bounds (manual) or neither (automatic from the lookback); see [grid backtesting](grid-backtesting.md) |
 | `--cache-dir`, `--output-dir`, `--refresh-data`, `--allow-data-gaps` | as before | |
 | `--allow-holdout-overlap` | off | see research safeguards |
 

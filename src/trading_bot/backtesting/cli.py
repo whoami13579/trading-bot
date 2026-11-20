@@ -4,6 +4,8 @@
     uv run trading-bot-backtest --strategy donchian --symbol EURUSD --time-frame HOUR --size 100
     uv run trading-bot-backtest --strategy grid --grid-lower 1.15 --grid-upper 1.19 \
         --start 2025-09-01 --end 2025-10-01
+    uv run trading-bot-backtest --strategy grid --grid-lookback 100 \
+        --start 2025-09-01 --end 2025-10-01    # automatic bounds
 
 Every strategy shares the data sources, engine, cost models and report. Omitted
 options use the selected strategy's preserved defaults (see --help).
