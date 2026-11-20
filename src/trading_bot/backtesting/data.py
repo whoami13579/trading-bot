@@ -29,8 +29,15 @@ def warmup_start(start, timeframe, candles):
 
 
 def load_history(
-    source, symbol, timeframe, start, end, warmup, cache, *, allow_gaps=False, now=None
+    source, symbol, timeframe, start, end, warmup, cache, *, allow_gaps=False, now=None,
+    required_warmup=None,
 ):
+    """Load ``warmup`` completed candles before ``start`` plus the scored range.
+
+    Fewer than ``warmup`` prior candles is an error unless ``required_warmup``
+    (default ``warmup``) still holds; the caller then handles the shortfall.
+    """
+    required = warmup if required_warmup is None else required_warmup
     start, end = utc(start), utc(end)
     now = utc(now or datetime.now(timezone.utc))
     if (
@@ -84,9 +91,9 @@ def load_history(
     prior = [c for c in candles if c.end <= start]
     before = len(prior)
     performance = [c for c in candles if c.timestamp >= start]
-    if before < warmup:
+    if before < required:
         raise DataError(
-            f"Insufficient warm-up: need {warmup} completed candles, received {before}"
+            f"Insufficient warm-up: need {required} completed candles, received {before}"
         )
     if not performance:
         raise DataError("No completed candles in the requested performance period")

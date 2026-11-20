@@ -8,6 +8,8 @@ simulation only: it never authenticates, reads credentials or submits orders.
 ```bash
 uv run trading-bot-backtest --strategy hma --symbol EURUSD --time-frame HOUR --size 100
 uv run trading-bot-backtest --strategy donchian --symbol EURUSD --time-frame HOUR --size 100
+uv run trading-bot-backtest --strategy grid --grid-lower 1.15 --grid-upper 1.19 --start 2025-09-01 --end 2025-10-01
+uv run trading-bot-backtest --strategy grid --grid-lookback 100 --start 2025-09-01 --end 2025-10-01
 ```
 
 ## Problems in the previous architecture
@@ -110,19 +112,20 @@ trading_bot.backtesting.cli`). `--strategy` defaults to `hma`, so earlier
 
 | Option | Default | Notes |
 | --- | --- | --- |
-| `--strategy` | `hma` | `hma`, `donchian` |
+| `--strategy` | `hma` | `hma`, `donchian`, `grid` |
 | `--symbol` | `EURUSD` | only EURUSD is verified |
-| `--size` | 100 | EUR base units |
-| `--time-frame` | HMA `MINUTE_30`, Donchian `HOUR` | `MINUTE` … `DAY` |
-| `--data-source` | HMA `dukascopy`, Donchian `snapshot` | `dukascopy`, `yfinance`, `snapshot` |
+| `--size` | 100 | EUR base units (grid: rejected, use `--level-size`) |
+| `--time-frame` | HMA `MINUTE_30`, Donchian/grid `HOUR` | `MINUTE` … `DAY` |
+| `--data-source` | HMA/grid `dukascopy`, Donchian `snapshot` | `dukascopy`, `yfinance`, `snapshot` |
 | `--snapshot` | `.cache/donchian/eurusd-30m.json.gz` | study snapshot |
 | `--start`, `--end`, `--lookback-days` | providers: last 30 complete UTC days; snapshot: 2023-11-01 to 2026-11-01 | UTC, end exclusive |
 | `--initial-balance`, `--leverage` | 1000, 1 | USD; simulated collateral |
-| `--execution-model` | HMA `continuous`, Donchian `research` | |
-| `--commission-per-order`, `--slippage-pips`, `--financing-usd-per-unit-day` | unmodeled | continuous model only |
+| `--execution-model` | HMA `continuous`, Donchian `research`, grid `grid` | `grid` only with grid strategies |
+| `--commission-per-order`, `--slippage-pips`, `--financing-usd-per-unit-day` | unmodeled | continuous and grid models |
 | `--cost-case` | `base` | research model only: `base`, `high`, `financing` |
 | `--hma-period`, `--direction` | 16, `BUY` | HMA only |
 | `--entry-lookback`, `--exit-lookback` | 20, 10 | Donchian only |
+| `--ema-period`, `--grid-lower`, `--grid-upper`, `--grid-lookback`, `--grid-intervals`, `--level-size`, `--max-position` | 50, automatic, automatic, 100, 10, 100, 500 | grid only: both bounds (manual) or neither (automatic from the lookback); see [grid backtesting](grid-backtesting.md) |
 | `--cache-dir`, `--output-dir`, `--refresh-data`, `--allow-data-gaps` | as before | |
 | `--allow-holdout-overlap` | off | see research safeguards |
 
@@ -302,6 +305,11 @@ offline, with sockets, credential files and broker imports blocked:
 
 Data, execution, costs, reports, safeguards and CLI options come for free.
 
+Strategies that manage many orders rather than one target position (the fixed
+grid) declare `execution="grid"` in their adapter and run on `GridExecution`
+(`backtesting/grid.py`), which reuses the same data, cost options, statistics and
+report contract. See [grid backtesting](grid-backtesting.md).
+
 ## Other strategies: integration assessment
 
 None were added, because their exact live semantics cannot yet be reproduced
@@ -330,7 +338,8 @@ and tested on completed candles without inventing behavior.
 
 ## Limitations and next steps
 
-- Candle-level execution; no ticks, intrabar paths or partial fills.
+- Candle-level execution; no ticks or partial fills. Only the grid model orders
+  intrabar limit fills, by a documented assumed candle path.
 - EURUSD/USD unit contracts only; Dukascopy/yfinance mappings are EURUSD-only.
 - Snapshot data covers the study interval only; Capital.com DEMO history
   acquisition failed (HTTP 404) during the study.

@@ -2,6 +2,10 @@
 
     uv run trading-bot-backtest --strategy hma --symbol EURUSD --time-frame HOUR --size 100
     uv run trading-bot-backtest --strategy donchian --symbol EURUSD --time-frame HOUR --size 100
+    uv run trading-bot-backtest --strategy grid --grid-lower 1.15 --grid-upper 1.19 \
+        --start 2025-09-01 --end 2025-10-01
+    uv run trading-bot-backtest --strategy grid --grid-lookback 100 \
+        --start 2025-09-01 --end 2025-10-01    # automatic bounds
 
 Every strategy shares the data sources, engine, cost models and report. Omitted
 options use the selected strategy's preserved defaults (see --help).
@@ -218,7 +222,12 @@ def build_parser():
     )
     parser.add_argument("--strategy", choices=tuple(ADAPTERS), default="hma")
     parser.add_argument("--symbol", default="EURUSD")
-    parser.add_argument("--size", type=number, default=dec(100), help="EUR base units")
+    parser.add_argument(
+        "--size",
+        type=number,
+        default=None,
+        help="EUR base units (default 100); grid strategies use --level-size",
+    )
     parser.add_argument(
         "--time-frame",
         "--time_frame",
@@ -240,7 +249,8 @@ def build_parser():
         "--execution-model",
         choices=EXECUTION_MODELS,
         default=None,
-        help="continuous (HMA default) or research windows (Donchian default)",
+        help="continuous (HMA default), research windows (Donchian default) or grid "
+        "limit orders (grid strategies only)",
     )
     parser.add_argument(
         "--cost-case",
