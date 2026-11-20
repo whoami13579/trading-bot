@@ -37,11 +37,9 @@ def build_report(
 
     Pre-existing HMA keys and meanings are unchanged; later keys are additive.
     """
-    from .engine import pnl_decomposition
-
     ledger = result.ledger
     unmodeled = execution.unmodeled(dataset)
-    pnl = pnl_decomposition(result)
+    pnl = execution.pnl(result)
     modeled = pnl["modeled_costs"]
     report = {
         "schema_version": 1,
@@ -62,7 +60,7 @@ def build_report(
             "configuration": execution.configuration(),
             "data": dataset.metadata,
             "statistics": stats,
-            "open_positions": [asdict(ledger.position)] if ledger.position else [],
+            "open_positions": execution.open_positions(result),
             "trades": [asdict(t) for t in ledger.trades],
             "rejected_entries": ledger.rejections,
             "equity_curve": result.equity_curve,
@@ -104,7 +102,16 @@ def build_report(
             "notes": execution.notes(dataset),
         }
     )
+    report.update(execution.extras(result))  # Model-specific, additive sections.
     return report
+
+
+def _columns(base, rows):
+    """Fixed leading columns, then any additional keys in first-seen order."""
+    names = list(base)
+    for row in rows:
+        names += [key for key in row if key not in names]
+    return names
 
 
 def save_report(report, root):
@@ -142,13 +149,13 @@ def save_report(report, root):
         "commission_cost",
         "total_cost",
     ]
-    for filename, rows, names in [
+    tables = [
         ("trades.csv", report["trades"], fields),
-        ("trade_details.csv", details, detail_fields),
+        ("trade_details.csv", details, _columns(detail_fields, details)),
         (
             "equity.csv",
             report["equity_curve"],
-            [
+            _columns([
                 "timestamp",
                 "phase",
                 "balance",
@@ -158,9 +165,13 @@ def save_report(report, root):
                 "available_funds",
                 "mark_price",
                 "quote_timestamp",
-            ],
+            ], report["equity_curve"]),
         ),
-    ]:
+    ]
+    if "grid" in report:
+        orders = report["grid"]["orders"]
+        tables.append(("grid_orders.csv", orders, _columns([], orders)))
+    for filename, rows, names in tables:
         with (destination / filename).open("w", newline="") as stream:
             writer = csv.DictWriter(stream, fieldnames=names)
             writer.writeheader()
@@ -219,7 +230,11 @@ def report_lines(report, path=None):
     lines = [
         ("Strategy", report["strategy_description"]),
         ("Symbol", report["symbol"]),
-        ("Size", f"{units(report['configuration']['size'])} EUR"),
+        (
+            "Size",
+            f"{units(report['configuration']['size'])} EUR"
+            + (" per grid level" if "grid" in report else ""),
+        ),
         ("Environment", report["environment"]),
         ("Data source", f"{report['source']} ({cached}{report['quote_basis']})"),
         ("Timeframe", f"{timeframe} ({TIMEFRAME_LABELS.get(timeframe, timeframe)})"),
@@ -286,6 +301,48 @@ def report_lines(report, path=None):
             ("Gap holding events", str(stats["gap_holding_events"])),
             ("Exposure", pct(stats["exposure_pct"])),
         ]
+    if "grid" in report:  # Fixed-grid execution.
+        grid = report["grid"]
+        inventory = grid["ending_inventory"]
+        levels = grid["levels"]
+        pending = inventory["pending_activation"]
+        lines += [
+            (
+                "Grid levels",
+                f"{len(levels)} from {levels[0]} to {levels[-1]}, "
+                f"{units(grid['level_size'])} EUR/level, max {units(grid['max_position'])} EUR",
+            ),
+            ("Grid activations", str(stats["grid_activations"])),
+            ("Direction changes", str(stats["direction_changes"])),
+            ("Grid exits", str(stats["grid_exits"])),
+            ("Flatten exits", str(stats["flatten_exits"])),
+            (
+                "Orders",
+                f"{stats['orders_placed']} placed, {stats['orders_filled']} filled, "
+                f"{stats['orders_cancelled']} cancelled, {stats['orders_rejected']} rejected",
+            ),
+            ("Trading costs", money(stats["trading_costs"])),
+            (
+                "Peak exposure",
+                f"{units(stats['peak_open_units'])} EUR in {stats['peak_open_lots']} lots "
+                f"({money(stats['peak_open_notional_usd'])} notional); committed "
+                f"{units(stats['peak_committed_units'])} EUR",
+            ),
+            (
+                "Ending inventory",
+                f"{stats['open_lots']} lots, {units(inventory['open_units'])} EUR "
+                f"{inventory['direction'] or 'no active grid'}; "
+                f"{stats['working_orders']} working orders",
+            ),
+        ]
+        if pending is not None:
+            lines.append(
+                (
+                    "Pending activation",
+                    f"{pending['direction']} at next open (signal "
+                    f"{pending['signal_time'].isoformat()})",
+                )
+            )
     lines += [
         (
             "Estimated total costs",

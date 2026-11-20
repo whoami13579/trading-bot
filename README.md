@@ -54,7 +54,7 @@ in the repository root.
 | CLI help | `uv run scripts/demo_roundtrip.py --help` | `uv run test_api_key.py --help` |
 | DEMO read-only preflight | `uv run scripts/demo_roundtrip.py --read-only` | `uv run test_api_key.py --read-only` |
 | LIVE read-only preflight | `uv run scripts/live_preflight.py --REAL` | `uv run test_live_api.py --REAL` |
-| Historical simulation, no broker access | `uv run trading-bot-backtest --strategy hma\|donchian` | `uv run hma.py --backtest`, `uv run src/trading_bot/strategies/donchian.py --backtest`, `uv run scripts/backtest.py` |
+| Historical simulation, no broker access | `uv run trading-bot-backtest --strategy hma\|donchian\|grid` | `uv run hma.py --backtest`, `uv run src/trading_bot/strategies/donchian.py --backtest`, `uv run scripts/backtest.py` |
 | Legacy read-only broker-history diagnostic | `uv run test_strategy.py` | — |
 
 The account-access commands above are documentation, not part of offline validation.
@@ -83,7 +83,16 @@ uv run trading-bot-backtest --strategy hma --symbol EURUSD --time-frame HOUR --s
 uv run trading-bot-backtest --strategy donchian --symbol EURUSD --time-frame HOUR --size 100
 uv run trading-bot-backtest --strategy donchian --cost-case high
 uv run trading-bot-backtest --strategy hma --end 2026-11-12 --slippage-pips 0.2
+uv run trading-bot-backtest --strategy grid --symbol EURUSD --time-frame HOUR \
+  --start 2025-09-01 --end 2025-10-01 --ema-period 50 \
+  --grid-lower 1.1500 --grid-upper 1.1900 --grid-intervals 40 \
+  --level-size 100 --max-position 500 --slippage-pips 0.1
 ```
+
+The grid strategy picks a long or short fixed-price grid from an EMA of completed
+closes and simulates many working limit orders with per-lot accounting. Its
+direction rule, fill and cost assumptions are in
+[grid backtesting](docs/grid-backtesting.md).
 
 Omitted options use each strategy's preserved defaults: HMA uses Dukascopy,
 30-minute candles, the last 30 complete UTC days and continuous execution;
@@ -126,6 +135,7 @@ and [the unified framework, compatibility notes and strategy integration guide](
 - [Setup and dependencies](docs/setup.md)
 - [Historical backtesting](docs/backtesting.md)
 - [Unified backtesting framework](docs/backtesting-framework.md)
+- [Fixed-grid backtesting](docs/grid-backtesting.md)
 - [Configuration and environment selection](docs/configuration.md)
 - [Trading safeguards and execution commands](docs/trading-safety.md)
 - [Network retries, pause and recovery](docs/network-recovery.md)

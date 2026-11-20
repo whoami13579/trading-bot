@@ -10,15 +10,28 @@ preregistered cost case (spread multiple, slippage, NY-rollover financing) and a
 explicit zero-commission assumption.
 
 Both use ``engine.simulate`` and the same Decimal ``Ledger``.
+
+``GridExecution`` is the fixed-grid mode: many working limit orders and
+separately accounted lots (``backtesting.grid``), with the same optional
+continuous-mode cost assumptions and the same report contract.
 """
 
 from dataclasses import asdict, dataclass
 from decimal import Decimal
 
-from .engine import CONTINUOUS, RESEARCH_WINDOW, SimulationConfig, run, statistics
+from .engine import (
+    CONTINUOUS,
+    RESEARCH_WINDOW,
+    ExecutionPolicy,
+    SimulationConfig,
+    pnl_decomposition,
+    run,
+    statistics,
+)
+from .grid import ending_inventory, grid_pnl, grid_statistics, simulate_grid
 from .study_engine import COSTS, CostCase, research_config, simulate_window
 
-EXECUTION_MODELS = ("continuous", "research")
+EXECUTION_MODELS = ("continuous", "research", "grid")
 
 
 def _plain(value: Decimal) -> str:
@@ -26,8 +39,22 @@ def _plain(value: Decimal) -> str:
     return text
 
 
+class SinglePositionReport:
+    """Report hooks for models simulated on the single-position ``Ledger``."""
+
+    def pnl(self, result):
+        return pnl_decomposition(result)
+
+    def open_positions(self, result):
+        position = result.ledger.position
+        return [asdict(position)] if position else []
+
+    def extras(self, result):
+        return {}
+
+
 @dataclass(frozen=True)
-class ContinuousExecution:
+class ContinuousExecution(SinglePositionReport):
     config: SimulationConfig
     name = "continuous"
     policy = CONTINUOUS
@@ -94,7 +121,7 @@ class ContinuousExecution:
 
 
 @dataclass(frozen=True)
-class ResearchExecution:
+class ResearchExecution(SinglePositionReport):
     case: CostCase
     config: SimulationConfig
     name = "research"
@@ -168,3 +195,88 @@ class ResearchExecution:
             f"{case.name.capitalize()} costs: {spread} + {_plain(case.slippage_pips)} "
             f"pip/leg slippage; commission assumed zero; {financing}."
         )
+
+
+GRID_POLICY = ExecutionPolicy("grid_limit_orders")
+
+
+@dataclass(frozen=True)
+class GridExecution(ContinuousExecution):
+    """Fixed-grid limit orders on the shared data, cost and report contracts."""
+
+    name = "grid"
+    policy = GRID_POLICY
+    description = (
+        "completed close EMA direction; grid activates or flattens at the next observed "
+        "open; limit orders fill intrabar on bid/ask with gap-through at the open; "
+        "orders created by a fill wait one candle; no final forced liquidation"
+    )
+
+    def simulate(self, candles, strategy, start, end):
+        result = simulate_grid(candles, strategy, self.config, start=start, end=end)
+        return result, grid_statistics(result)
+
+    def assumed(self, dataset):
+        c = self.config
+        values = []
+        if c.commission_per_order is not None:
+            values.append(f"commission {_plain(c.commission_per_order)} USD/fill")
+        if c.slippage_pips is not None:
+            values.append(
+                f"slippage {_plain(c.slippage_pips)} pip per market (flatten) fill; "
+                "limit fills at limit or better"
+            )
+        if c.financing_per_unit_day is not None:
+            values.append(
+                f"financing {_plain(c.financing_per_unit_day)} USD/unit/calendar day per lot"
+            )
+        return values
+
+    def assumptions(self):
+        return dict(
+            super().assumptions(),
+            direction="EMA of completed midpoint closes (source close without bid/ask); "
+            "above selects long, below short, equal keeps the current grid",
+            activation="direction changes cancel working orders at the signal close, "
+            "flatten lots at the next observed open, then seed the new grid relative to "
+            "the signal close",
+            fills="buys on ask, sells on bid; gap-through fills at the open, touches fill "
+            "at the limit; one candle path open -> nearer extreme -> farther extreme -> "
+            "close orders multi-level fills; fill-created orders wait one candle",
+            exposure="open lot units + working entry units <= max position; nearer "
+            "levels admitted first; funds checked on admission and on fill",
+            spread_and_slippage="embedded in execution prices; spread estimate is half "
+            "the fill candle's opening spread per fill; slippage only on market "
+            "(flatten) fills",
+        )
+
+    def notes(self, dataset):
+        return (
+            "Grid lots are accounted separately; gross P&L is midpoint-estimated before "
+            "costs and net P&L marks open lots at the liquidation side. Intrabar fill "
+            "order follows an assumed candle path. All orders are simulated.\n"
+            "Costs unavailable from the provider are unmodeled; results are not "
+            "guaranteed net of all trading costs."
+        )
+
+    def pnl(self, result):
+        return grid_pnl(result)
+
+    def open_positions(self, result):
+        return ending_inventory(result)["open_lots"]
+
+    def extras(self, result):
+        strategy = result.ledger.strategy
+        return {
+            "grid": {
+                "levels": list(strategy.levels),
+                "ema_period": strategy.ema_period,
+                "level_size": strategy.level_size,
+                "max_position": strategy.max_position,
+                "peak_exposure": dict(result.ledger.peak),
+                "ending_inventory": ending_inventory(result),
+                "activations": [e for e in result.ledger.events
+                                if e["action"] in ("ACTIVATE", "DEACTIVATE")],
+                "orders": [asdict(o) for o in result.ledger.orders],
+            }
+        }

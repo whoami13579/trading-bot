@@ -15,7 +15,7 @@ from .adapters import adapter_for
 from .cache import Cache
 from .data import load_history, load_snapshot
 from .evaluation import canonical_sha256, holdout_check
-from .execution import ContinuousExecution, ResearchExecution
+from .execution import ContinuousExecution, GridExecution, ResearchExecution
 from .engine import SimulationConfig
 from .models import DataError, utc
 from .reporting import build_report
@@ -25,6 +25,7 @@ PROVIDER_SOURCES = ("dukascopy", "yfinance")
 DATA_SOURCES = (*PROVIDER_SOURCES, "snapshot")
 DEFAULT_SNAPSHOT = Path(".cache/donchian/eurusd-30m.json.gz")
 DEFAULT_LOOKBACK_DAYS = 30
+DEFAULT_SIZE = Decimal(100)
 
 
 @dataclass(frozen=True)
@@ -41,7 +42,7 @@ class BacktestRequest:
     end: datetime | None = None
     lookback_days: int | None = None
     initial_balance: Decimal = Decimal(1000)
-    size: Decimal = Decimal(100)
+    size: Decimal | None = None  # EUR units; default 100. Grid uses level_size.
     leverage: Decimal = Decimal(1)
     commission_per_order: Decimal | None = None
     slippage_pips: Decimal | None = None
@@ -81,7 +82,24 @@ def plan(request: BacktestRequest, *, now=None) -> Plan:
         raise PlanError(
             f"{', '.join(sorted(unknown))} not supported by --strategy {adapter.key}"
         )
+    missing = [
+        p.flags[0]
+        for p in adapter.parameters
+        if p.required and request.parameters.get(p.dest) is None
+    ]
+    if missing:
+        raise PlanError(f"--strategy {adapter.key} requires {', '.join(missing)}")
     strategy = adapter.build(**request.parameters)
+    grid = adapter.execution == "grid"
+    if grid:
+        if request.size is not None and request.size != strategy.level_size:
+            raise PlanError(
+                "--size does not apply to --strategy grid; set the quantity per level "
+                "with --level-size"
+            )
+        size = strategy.level_size
+    else:
+        size = DEFAULT_SIZE if request.size is None else request.size
     time_frame = request.time_frame or adapter.time_frame
     if time_frame not in MINUTES:
         raise PlanError(f"Unsupported timeframe: {time_frame}")
@@ -89,18 +107,24 @@ def plan(request: BacktestRequest, *, now=None) -> Plan:
     if source not in DATA_SOURCES:
         raise PlanError(f"Unsupported data source: {source}")
     model = request.execution or adapter.execution
+    if grid != (model == "grid"):
+        raise PlanError(
+            "--strategy grid runs only on --execution-model grid, and the grid model "
+            "only runs grid strategies"
+        )
     configured = {
         "--commission-per-order": request.commission_per_order,
         "--slippage-pips": request.slippage_pips,
         "--financing-usd-per-unit-day": request.financing_usd_per_unit_day,
     }
-    if model == "continuous":
+    if model in ("continuous", "grid"):
         if request.cost_case is not None:
             raise PlanError("--cost-case applies only to --execution-model research")
-        execution = ContinuousExecution(
+        model_class = GridExecution if model == "grid" else ContinuousExecution
+        execution = model_class(
             SimulationConfig(
                 request.initial_balance,
-                request.size,
+                size,
                 request.leverage,
                 request.commission_per_order,
                 request.slippage_pips,
@@ -111,13 +135,13 @@ def plan(request: BacktestRequest, *, now=None) -> Plan:
         given = [name for name, value in configured.items() if value is not None]
         if given:
             raise PlanError(
-                f"{', '.join(given)} apply only to --execution-model continuous; research "
+                f"{', '.join(given)} apply only to --execution-model continuous or grid; research "
                 "costs come from --cost-case base|high|financing"
             )
         execution = ResearchExecution.from_case(
             request.cost_case or "base",
             initial_balance=request.initial_balance,
-            size=request.size,
+            size=size,
             leverage=request.leverage,
         )
     else:
@@ -150,7 +174,7 @@ def plan(request: BacktestRequest, *, now=None) -> Plan:
         "data_source": source,
         "execution_model": execution.name,
         "cost_case": execution.case.name if execution.name == "research" else None,
-        "size": request.size,
+        "size": size,
         "initial_balance": request.initial_balance,
         "leverage": request.leverage,
     }

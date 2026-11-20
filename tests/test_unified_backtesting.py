@@ -414,7 +414,7 @@ class CliTests(unittest.TestCase):
         source.fetch.assert_called_once()
 
     def test_adapters_are_independent(self):
-        self.assertEqual(set(ADAPTERS), {"hma", "donchian"})
+        self.assertEqual(set(ADAPTERS), {"hma", "donchian", "grid"})
         a, b = HMA.build(hma_period=20), HMA.build()
         self.assertEqual((a.period, b.period), (20, 16))
         self.assertEqual(DONCHIAN.build(entry_lookback=25).exit, 10)
