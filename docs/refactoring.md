@@ -554,3 +554,29 @@ plus identical real-data reports before and after), the online strategies'
 behavior, and every safety control. Offline tests: 687 after the CLI commit,
 719 after this one (32 new in `tests/test_strategy_backtests.py`). One existing
 assertion of the adapter key set was updated to the seven strategies.
+
+## PR #8 review corrections
+
+| Finding | Resolution |
+| --- | --- |
+| Moving-average/SMA backtests reverse (close, then open); online they send an opposite order without closing | Verified the online path. DEMO: a netting account ends flat, a hedging account holds offsetting positions. LIVE: the gate refuses the order (`live_open_order_limit_reached`) and stops. Reports state the difference; tests pin all three cases. Online behavior unchanged; follow-up #10 |
+| Online EMA-HMA/Multiple-HMA read forming candles; backtests use completed ones | Verified: only HMA filters (`completed_closes`). The backtests stay causal, and reports state the difference. Tests show forming candles change real EMA-HMA decisions and that 4H candles are never used before they close. Follow-up #11 |
+| Safety differs between strategies | Comparison table in [trading safety](trading-safety.md#safety-capabilities-by-strategy); docs no longer imply equal guarantees. Shared execution component: #9 |
+| Stale help text listing only hma, donchian, grid | `tb-trade --help` lists backtestable strategies from the registry |
+| `tb-trade --strategy hma --help` advertised refused `--backtest` options | New `hma.trade` entry point: `hma.main(simulation_help=False)` keeps those options parseable but suppressed from help. `trading-bot-hma`/`hma.py` are unchanged |
+| Options of unrelated strategies treated as shared trading options | Per-strategy rule: `option_names() - {--symbol, --size, ...} - Strategy.trading_options`. Each declaration is checked against the strategy's real parser |
+| Private argparse use (`parser._actions`) | `backtesting.cli.option_names()` records the public `Action.option_strings` returned by `add_argument`; a test checks that no `._actions` remains in `src/` |
+
+Report bytes: reports of the five order-capable strategies gain an
+`online_differences` list (JSON), a warning block at the top of the terminal
+report and a warning box in `equity.html`. Donchian and Grid reports are
+byte-identical. Every trade, number, assumption and configuration/data hash is
+unchanged. This was verified on the seven real-data runs, on fixture runs against
+`origin/master`, and by a test that runs the same backtest with and without the
+warnings.
+
+Offline tests: 719 before the corrections, 731 after (12 new in
+`tests/test_execution_assumptions.py`; several existing CLI tests updated to the
+corrected behavior).
+
+Planned online support for the simulation-only strategies: Donchian #12, Grid #13.
