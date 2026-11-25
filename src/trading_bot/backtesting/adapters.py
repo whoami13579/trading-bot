@@ -70,6 +70,9 @@ class StrategyAdapter:
     attributes: dict = field(default_factory=dict)
     # The factory also receives the resolved signal timeframe (multi-timeframe rules).
     uses_time_frame: bool = False
+    # How the online strategy's actual candles, orders or limits differ from this
+    # simulation. Shown in every terminal, JSON and HTML report of the strategy.
+    online_differences: tuple[str, ...] = ()
 
     def defaults(self):
         return {p.dest: p.default for p in self.parameters}
@@ -86,6 +89,39 @@ class StrategyAdapter:
         return {p.dest: getattr(strategy, self.attributes.get(p.dest, p.dest), None)
                 for p in self.parameters}
 
+
+# Online/backtest differences, verified against the online strategy modules and the
+# LIVE execution gate (risk/live_execution.py); see docs/strategy-backtesting.md.
+LIVE_LIMITS = (
+    "LIVE limits: a LIVE run also stops at its --max-orders limit (default one opening "
+    "order per process), the other LIVE risk limits and its broker stop; this "
+    "simulation applies none of them and can trade more often than a LIVE run."
+)
+REVERSAL = (
+    "Execution differs from the online strategy: this simulation closes the position "
+    "and opens the opposite side on each signal change (stop and reverse). Online, the "
+    "strategy sends one opposite market order without closing first. A netting DEMO "
+    "account then ends flat, a hedging DEMO account holds two offsetting positions, and "
+    "a LIVE run stops at that order (live_open_order_limit_reached). Only the signals "
+    "match. Reported exposure, executed legs, costs and P&L model the intended "
+    "stop-and-reverse, not any broker account."
+)
+POLLED_OPENS = (
+    "Signal timing: online polls every 60 s and reads the open of the candle that has "
+    "just started. This simulation reads the same opens of completed candles, decides "
+    "at the candle's close and fills at the next open, one candle later."
+)
+FORMING_CANDLES = (
+    "Candle selection differs from the online strategy: online reads the newest broker "
+    "candles at each boundary, which end with the candle still forming. This simulation "
+    "uses completed candles only, so online windows are one candle later and end with an "
+    "unfinished close. Signals can differ."
+)
+FORMING_LONG_TERM = (
+    "Higher timeframe: online, the long-term vote also includes the long-term candle "
+    "still in progress. This simulation uses a long-term candle only after it has fully "
+    "closed and none of its constituents is missing."
+)
 
 def _hma(hma_period, direction):
     return HmaStrategy(hma_period, direction)
@@ -110,6 +146,7 @@ HMA = StrategyAdapter(
     data_source="dukascopy",
     execution="continuous",
     attributes={"hma_period": "period"},
+    online_differences=(LIVE_LIMITS,),
 )
 
 DONCHIAN = StrategyAdapter(
@@ -211,6 +248,7 @@ MOVING_AVERAGE = StrategyAdapter(
                   f"{signals.MOVING_AVERAGE_PERIOD}; fixed in the online strategy)"),
     ),
     factory=MovingAverageStrategy,
+    online_differences=(REVERSAL, POLLED_OPENS, LIVE_LIMITS),
     describe=lambda s: f"Moving average (stop and reverse), {s.average_period} candle opens",
     signal_price=ASK_OPEN,
     time_frame=signals.POLLING_TIME_FRAME,
@@ -228,6 +266,7 @@ SMA = StrategyAdapter(
                   f"{signals.SMA_SLOW_PERIOD}; fixed online)"),
     ),
     factory=SmaCrossoverStrategy,
+    online_differences=(REVERSAL, POLLED_OPENS, LIVE_LIMITS),
     describe=lambda s: f"SMA {s.fast_period}/{s.slow_period} crossover (stop and reverse)",
     signal_price=ASK_OPEN,
     time_frame=signals.POLLING_TIME_FRAME,
@@ -246,6 +285,7 @@ EMA_HMA = StrategyAdapter(
         _hma_period(signals.EMA_HMA_HMA_PERIOD),
     ),
     factory=EmaHmaStrategy,
+    online_differences=(FORMING_CANDLES, LIVE_LIMITS),
     describe=lambda s: (f"EMA {s.short_period}/{s.long_period} trend with HMA "
                         f"{s.hma_period} confirmation"),
     signal_price=ASK_CLOSE,
@@ -264,6 +304,7 @@ MULTIPLE_HMA = StrategyAdapter(
                   f"--time-frame (default {signals.MULTIPLE_HMA_LONG_TERM})"),
     ),
     factory=MultipleHmaStrategy,
+    online_differences=(FORMING_CANDLES, FORMING_LONG_TERM, LIVE_LIMITS),
     describe=lambda s: (f"Multiple HMA: {s.long_term} 13-indicator vote with "
                         f"{s.time_frame} HMA {s.hma_period} confirmation"),
     signal_price=ASK_CLOSE + "; long-term candles aggregated from completed signal candles",

@@ -314,12 +314,16 @@ offline, with sockets, credential files and broker imports blocked:
 2. Add a `StrategyAdapter` to `backtesting/adapters.py`: parameters (flags,
    defaults), factory, description, signal price and default timeframe/data
    source/execution model.
-3. Register the strategy's capabilities in `strategies/registry.py` with
+3. If the strategy also trades online, list every way its online candles, orders
+   or limits differ from the simulation in the adapter's `online_differences`.
+   Reports print them as warnings and store them in `report.json`; they are not
+   part of any hash.
+4. Register the strategy's capabilities in `strategies/registry.py` with
    `BACKTEST` in its modes and `backtest_adapter` set to the adapter key (an
    offline test requires the registry and `ADAPTERS` to match). Do not add
    `DEMO`/`LIVE` unless a reviewed trading entry point already exists. See the
    [CLI guide](cli.md#adding-a-strategy).
-4. Add regression tests (pinned results, no-look-ahead, CLI defaults).
+5. Add regression tests (pinned results, no-look-ahead, CLI defaults).
 
 Data, execution, costs, reports, safeguards and CLI options come for free; no
 wrapper script or console-script entry is needed.
@@ -345,8 +349,11 @@ the decisions this section previously listed as open:
   candles. "Neutral" closes the position. Until 210 complete 4H candles exist,
   no decision is made.
 
-Their signal rules are shared with the online code (`strategies/indicators.py`,
+Their **signal rules** are shared with the online code (`strategies/indicators.py`,
 `strategies/signals.py`); the candle classes are in `backtesting/strategy.py`.
+Their candle timing, and for moving-average and sma their position transitions,
+differ from the online loops; every report states this (`online_differences`;
+#10, #11).
 Details, differences from the online processes and reference results:
 [strategy backtesting](strategy-backtesting.md).
 

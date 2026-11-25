@@ -21,7 +21,25 @@ reproducibility hashes as HMA. HMA is documented in
 [framework guide](backtesting-framework.md) and Grid in
 [grid backtesting](grid-backtesting.md).
 
-## One rule implementation for trading and backtesting
+## What "equivalent" means here
+
+Three levels must be kept apart:
+
+| Level | moving-average, sma | ema-hma, multiple-hma | hma |
+| --- | --- | --- | --- |
+| **Signal rule** (same prices in, same BUY/SELL/flat decision out) | equivalent: same functions | equivalent: same functions | equivalent |
+| **Candle selection** (which prices go in, and when) | differs: one candle later | differs: online windows end with the forming candle | equivalent: completed candles both ways |
+| **Position and execution** (what the account holds afterwards) | **differs**: simulated stop-and-reverse; online opposite order without closing | equivalent position rule | equivalent position rule |
+| **LIVE limits** (`--max-orders`, risk limits, broker stop) | not simulated | not simulated | not simulated |
+
+Signal equivalence is tested. It does **not** imply that a backtest reproduces
+what a DEMO or LIVE account would hold, pay or earn. Every backtest report of an
+order-capable strategy lists its differences under `online_differences` in
+`report.json`. It also prints them at the top of the terminal report and shows
+them in `equity.html`. Donchian and Grid have no online mode, so their reports
+carry no such section.
+
+### One rule implementation for trading and backtesting
 
 The signal rules live in broker-free modules:
 
@@ -38,9 +56,10 @@ price lists that the online code reads.
 
 Online behavior is unchanged. The extracted functions compute the former
 expressions exactly, as the offline tests confirm. The tests also drive each
-unchanged online loop with a mocked broker over a controlled price series and
-check that every online decision equals the backtest's decision on the same
-prices (`tests/test_strategy_backtests.py`, `OnlineEquivalenceTests`).
+unchanged online loop with a mocked broker and check that every online decision
+equals the backtest rule on the same prices (`tests/test_strategy_backtests.py`,
+`OnlineEquivalenceTests`). The tests in `tests/test_execution_assumptions.py`
+pin where execution and candle selection differ.
 
 ## Strategy rules, parameters and defaults
 
@@ -112,42 +131,70 @@ All four strategies run on the **continuous** execution model by default. A
 completed-close decision fills at the next observed open at the ask (BUY) or bid
 (SELL), with no forced liquidation at the end. Optional commission, slippage and
 financing assumptions apply, and unconfigured costs are reported as unmodeled.
-`--execution-model research` also works; `grid` does not. These differences
-from the online processes are deliberate and deterministic:
+`--execution-model research` also works; `grid` does not.
 
-1. **Completed candles only.** The online ema-hma and multiple-hma loops ask the
-   broker for the latest candles at each boundary (plus 2 s). Without the
-   completed-candle filter that HMA uses, the newest of those candles may still be
-   forming; for multiple-hma this includes the 4H candle in progress. The backtest
-   never uses a candle, or a higher-timeframe candle, before it has closed. This is
-   the convention already accepted for HMA.
-2. **Polling strategies decide one candle later.** Online, moving-average and sma
-   read the open of the candle that has just started, then order immediately. The
-   backtest reads the same open prices but decides at that candle's close and
-   fills at the next open. Online polling also drifts by the loop's processing
-   time, so it can repeat or skip a minute; the backtest uses each completed
-   candle exactly once.
-3. **Opposite orders are simulated as reversals.** Online, moving-average and sma
-   send a same-size order on the other side without closing the open position.
-   The tracked `status` ("Tracks if we are currently BUY or SELL") and the comments
-   ("BUY if Fast crosses ABOVE Slow") describe a long/short reversal, which the
-   backtest models. On a broker account the result depends on its position mode.
-   In netting mode the opposite order flattens rather than reverses. In hedging
-   mode it opens an offsetting position with zero net exposure. The LIVE gate's
-   single-position and order limits block most such sequences. Read these results
-   as the strategy's stated intent, not as a reproduction of any one account mode.
-4. **Startup artifacts are not simulated.** moving-average waits after start until
-   the price first crosses its average. The first sma iteration repeats the newest
-   buffered price, so for 21 minutes one price is counted twice. Both depend on when
-   the process starts. The backtest uses clean windows from the first decision.
-5. **Scheduling options are not simulated.** `--days 5` waits for the market to
-   reopen; historical candles exist only while the market trades. LIVE preflight,
-   stop orders, account limits and confirmation timing are not part of any
-   backtest.
-6. **Periods fixed online are configurable in the backtest.**
-   `--average-period`, `--fast-period` and `--slow-period` default to the fixed
-   online values. Other values are research settings that the online command
-   cannot trade.
+### 1. Opposite orders (moving-average, sma): position and execution differ
+
+Online, a signal change sends **one market order on the new side without closing
+the open position** (`createPosition` only). The backtest **closes and reopens**
+(stop and reverse), the intent described by the strategies' tracked `status` and
+comments. What an account actually holds afterwards:
+
+| Run | After BUY, SELL, BUY, SELL signals | Verified by |
+| --- | --- | --- |
+| Backtest | long, short, long, short: always 100 units exposed | `ReversalExecutionTests` |
+| DEMO, netting account | long, flat, long, flat: net exposure 100, 0, 100, 0 | mocked netting account |
+| DEMO, hedging account | 1, 2, 3, 4 open positions; net exposure 100, 0, 100, 0 | mocked hedging account |
+| LIVE (hedging mode required) | first position opens; the opposite order is refused (`live_open_order_limit_reached`) and the process stops, leaving that position with its broker stop | real LIVE gate, mocked broker |
+
+Impact on the reported numbers:
+
+- **Exposure:** the backtest is always exposed after the first signal. Online
+  accounts are flat (netting) or hedged (hedging) half of the time, and a LIVE run
+  holds one position at most.
+- **Transaction costs:** a simulated reversal is two executed legs, close plus open
+  (for N signals: 2N − 1 legs). Online sends N orders, but a hedging account keeps
+  every position open, paying spread and financing on all of them until they are
+  closed manually.
+- **P&L:** realized and unrealized P&L follow the simulated positions, so they
+  are not an estimate of any account's result.
+
+Changing the online behavior to an explicit close, confirm, then open is tracked
+in #10. This PR does not change online execution.
+
+### 2. Candle selection (all four): timing differs
+
+| Strategy | Online input at a decision | Backtest input |
+| --- | --- | --- |
+| moving-average, sma | polled every 60 s (drifting): the open ask of the candle that has just started | the same opens of **completed** candles; decides at that candle's close, fills at the next open, one candle later |
+| ema-hma | at each 5-minute boundary (+2 s): the newest 200 and 48 candles, **ending with the candle still forming** (its close is its first quote) | the newest 200 and 48 **completed** candles |
+| multiple-hma | at each 30-minute boundary: 60 signal candles and 210 4H candles, both **ending with the candle in progress** | completed 30-minute candles, and only 4H candles that had fully closed with no missing constituent |
+| hma | completed candles (`completed_closes`), with stale and missing candles skipped | completed candles |
+
+The backtest never uses a candle, or a higher-timeframe candle, before it has
+closed. Look-ahead is not introduced to imitate the online timing. Switching
+ema-hma and multiple-hma to completed candles online is tracked in #11.
+`FormingCandleTests` shows that with a forming candle in the broker window, real
+EMA-HMA decisions differ.
+
+### 3. Not simulated (all order-capable strategies)
+
+- **LIVE limits.** A LIVE run stops at `--max-orders` (default: one opening order
+  per process), the other LIVE risk limits and its broker stop.
+- **Process startup.** moving-average waits until the price first crosses its
+  average. The first sma iteration repeats the newest buffered price, so for 21
+  minutes one price is counted twice.
+- **Scheduling.** `--days 5` waits for the market to reopen; historical candles
+  exist only while the market trades.
+- **Safety machinery.** Order confirmation, network pauses and other safety
+  controls differ by strategy; see
+  [trading safety](trading-safety.md#safety-capabilities-by-strategy).
+
+### 4. Periods fixed online are configurable in the backtest
+
+`--average-period`, `--fast-period` and `--slow-period` default to the fixed
+online values. Other values are research settings that the online command cannot
+trade.
 
 ## Example commands
 
@@ -214,7 +261,9 @@ uv run tb-backtest --strategy sma --symbol EURUSD --data-source dukascopy \
 ```
 
 Rerunning the same command produces an identical report. HMA, Donchian and Grid
-produced identical reports, including both hashes, before and after this change.
+produced identical numbers, trades and hashes before and after the issue #7
+changes. Reports of the five order-capable strategies now also contain the
+explanatory `online_differences` section; it is not part of any hash.
 
 ## Limitations
 
@@ -228,4 +277,6 @@ produced identical reports, including both hashes, before and after this change.
   one-minute history).
 - The differences listed above (reversal semantics, startup artifacts,
   completed-candle timing) are modeling choices. Change them only together with
-  their tests.
+  their tests and the report warnings (`online_differences` on each adapter).
+- Follow-ups: #10 (explicit online reversals), #11 (completed candles online),
+  #9 (shared online execution and safety for the older strategies).

@@ -46,10 +46,21 @@ network access. Keep `.env` and integration state private and ignored.
 | `grid` | No | No | Yes |
 
 Every strategy can be backtested. Donchian and Grid are historical simulations
-only; `tb-trade` rejects them before any broker access. The backtests reuse the
-online strategies' own signal functions and defaults. Their exact rules,
-parameters, warm-ups and the documented differences from live polling are in
-[strategy backtesting](docs/strategy-backtesting.md). Each strategy is implemented once under
+only; `tb-trade` rejects them before any broker access. DEMO/LIVE support for them
+is planned in #12 and #13 and is not implemented.
+
+The backtests reuse each online strategy's **signal rule** and defaults, but not
+necessarily its online candle timing, order execution or LIVE limits:
+
+- moving-average and sma simulate stop-and-reverse, while online they send an
+  opposite order without closing;
+- ema-hma and multiple-hma use completed candles, while online they read the
+  forming candle.
+
+Every affected report states these differences. Online safety controls also
+differ between strategies; only HMA has confirmation tracking and network
+recovery. See [strategy backtesting](docs/strategy-backtesting.md) and the
+[safety comparison](docs/trading-safety.md#safety-capabilities-by-strategy). Each strategy is implemented once under
 `src/trading_bot/strategies/` and declared once in
 `src/trading_bot/strategies/registry.py`. The [CLI guide](docs/cli.md) covers
 every option and default, which commands can place orders, the registry design,

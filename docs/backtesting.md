@@ -4,6 +4,8 @@
 > and grid) share one backtesting framework and one CLI (`tb-backtest --strategy
 > NAME`, also installed as `trading-bot-backtest`); see
 > [strategy backtesting](strategy-backtesting.md) for the four added in issue #7.
+> Reports of order-capable strategies list how their online execution differs
+> (`online_differences`); for HMA that is only the LIVE limits.
 > This page documents the HMA
 > continuous mode, data providers and accounting, which are unchanged. See
 > [backtesting-framework.md](backtesting-framework.md) for the shared architecture,

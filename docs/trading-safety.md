@@ -43,14 +43,56 @@ These are online strategy commands and can place orders when preflight succeeds.
 for validation, not a running strategy.
 
 `tb-trade` changes nothing between the command line and the strategy. It requires
-exactly one `--strategy` and refuses unknown or backtest-only strategies,
+exactly one `--strategy` and refuses unknown or simulation-only strategies,
 backtesting options, and environment spellings other than `--REAL`/`--real`.
-It then calls the strategy's existing `main()` once with the remaining arguments.
-The strategy's parser, defaults, account and instrument validation, LIVE fee
-verification, limits, stops, ownership checks, account lock, durable intent
-journal, confirmation, reconciliation, session handling, read-only retries and
-shutdown behavior apply unchanged. `tb-trade` has no broker, retry or order code.
+It then calls the strategy's existing entry point once with the remaining
+arguments. `tb-trade` has no broker, retry or order code. **It does not give the
+strategies equal safety guarantees.** Each strategy keeps its own loop and its
+own controls, and they differ (see the comparison below). Every LIVE run goes
+through the same LIVE gate.
 See the [CLI guide](cli.md).
+
+### Safety capabilities by strategy
+
+Verified against the strategy modules, the client and the LIVE gate. "LIVE gate"
+means `risk/live_execution.py`, which applies to every order-capable strategy in
+LIVE. It checks account, environment, fees, exposure, margin, charges and
+drawdown, requires a broker stop, permits at most one owned position, verifies
+confirmations, keeps the process lock and the durable intent journal, never
+retries, and stops on any uncertainty.
+
+| Capability | HMA | EMA-HMA | Multiple-HMA | SMA | Moving average |
+| --- | --- | --- | --- | --- | --- |
+| Scheduling | candle boundaries; missed boundaries skipped | 5-minute boundaries | 30-minute boundaries | free-running 60 s loop | free-running 60 s loop after a startup wait |
+| Completed candles only | yes (`completed_closes`; a missing expected candle skips the cycle) | no: window ends with the forming candle (#11) | no: 30-minute and 4H windows end with candles in progress (#11) | uses the just-started candle's open | uses the just-started candle's open |
+| Stale-signal guard | `--max-signal-delay` (`CycleGuard`) | none | none | none | none |
+| Broker positions checked before an order | yes | yes | yes | no (tracked side only) | no (tracked side only) |
+| What it closes | every position on the symbol in DEMO; owned only in LIVE (gate) | same as HMA | same as HMA | never closes | never closes |
+| Opposite signal | goes flat (BUY/flat or SELL/flat) | closes on disagreement | closes on disagreement | opposite order without closing (#10) | opposite order without closing (#10) |
+| DEMO order confirmation | `PendingOrders`: confirmation and position visibility before the next order; timeout stops | none | none | none | none |
+| Duplicate prevention after a non-200 order response | pending tracking + positions | positions only | positions only | none: the same side is resent next loop | none: the same side is resent next loop |
+| Transport failure during an order | stops; outcome reported uncertain | stops | stops | stops | stops |
+| Network outage | DEMO: read retries, pause, resume with a re-verified client; LIVE: stop | stop (fail-closed) | stop | stop | stop |
+| Session expiry | renewed once per cycle (`prepare_trading_cycle`) | same | same | same | same |
+| Reauthentication after an outage | yes (DEMO) | no | no | no | no |
+| Graceful shutdown | SIGINT/SIGTERM deferred during an order request; shutdown reported | default interrupt | default | default | default |
+| Restart reconciliation | DEMO unconfirmed-order warning; LIVE journal | LIVE journal | LIVE journal | LIVE journal | LIVE journal |
+| LIVE gate | yes, bound to the cycle deadline | yes | yes | yes | yes |
+
+Consequences:
+
+- In **DEMO**, HMA, EMA-HMA and Multiple-HMA close every position on the symbol,
+  including positions this process did not open. The LIVE gate refuses unrelated
+  positions.
+- SMA and moving average can send a **duplicate order** in DEMO when a broker
+  response was not HTTP 200 but the order executed. A network-level failure stops
+  the process instead.
+- In LIVE, SMA and moving average stop at their first opposite signal
+  (`live_open_order_limit_reached`).
+
+Bringing the older strategies to HMA's level with one shared component, without
+copying HMA's loop into each module, is tracked in #9. Donchian and Grid have no
+online mode (planned in #12 and #13).
 
 | Selection | Environment | Endpoint |
 | --- | --- | --- |
