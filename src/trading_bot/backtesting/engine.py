@@ -629,38 +629,73 @@ def run(
 
 def statistics(result):
     ledger = result.ledger
-    wins = [t.net_pnl for t in ledger.trades if t.net_pnl > 0]
-    losses = [t.net_pnl for t in ledger.trades if t.net_pnl < 0]
-    peak = result.config.initial_balance
+    final = result.equity_curve[-1]
+    return summarize(
+        trades=ledger.trades,
+        curve=result.equity_curve,
+        initial_balance=result.config.initial_balance,
+        balance=ledger.balance,
+        opened=sum(e["action"] == "OPEN" for e in ledger.events),
+        cash_costs=ledger.costs,
+        slippage=ledger.embedded_slippage,
+        spread=ledger.embedded_spread,
+        remaining_positions=int(ledger.position is not None),
+        remaining_units=ledger.position.size if ledger.position else ZERO,
+        remaining_notional=ledger.position.size * final["mark_price"]
+        if ledger.position
+        else ZERO,
+        rejected=len(ledger.rejections),
+        breaches=ledger.margin_breaches,
+    )
+
+
+def summarize(
+    *,
+    trades,
+    curve,
+    initial_balance,
+    balance,
+    opened,
+    cash_costs,
+    slippage,
+    spread,
+    remaining_positions,
+    remaining_units,
+    remaining_notional,
+    rejected,
+    breaches,
+):
+    """Standard statistics shared by every simulator (single position or grid)."""
+    wins = [t.net_pnl for t in trades if t.net_pnl > 0]
+    losses = [t.net_pnl for t in trades if t.net_pnl < 0]
+    peak = initial_balance
     drawdown = ZERO
     drawdown_pct = ZERO
-    for point in result.equity_curve:
+    for point in curve:
         peak = max(peak, point["equity"])
         drawdown = max(drawdown, peak - point["equity"])
         if peak > 0:
             drawdown_pct = max(drawdown_pct, (peak - point["equity"]) / peak * 100)
-    final = result.equity_curve[-1]
+    final = curve[-1]
     gross_profit = sum(wins, ZERO)
     gross_loss = -sum(losses, ZERO)
     return {
-        "initial_balance": result.config.initial_balance,
-        "final_balance": ledger.balance,
+        "initial_balance": initial_balance,
+        "final_balance": balance,
         "final_equity": final["equity"],
-        "net_pnl": final["equity"] - result.config.initial_balance,
-        "total_return_pct": (final["equity"] / result.config.initial_balance - 1) * 100
-        if result.config.initial_balance
+        "net_pnl": final["equity"] - initial_balance,
+        "total_return_pct": (final["equity"] / initial_balance - 1) * 100
+        if initial_balance
         else None,
-        "realized_pnl": ledger.balance - result.config.initial_balance,
+        "realized_pnl": balance - initial_balance,
         "unrealized_pnl": final["unrealized_pnl"],
-        "closed_trades_net_pnl": sum((t.net_pnl for t in ledger.trades), ZERO),
-        "total_trades": len(ledger.trades),
-        "opened_trades": sum(e["action"] == "OPEN" for e in ledger.events),
+        "closed_trades_net_pnl": sum((t.net_pnl for t in trades), ZERO),
+        "total_trades": len(trades),
+        "opened_trades": opened,
         "winning_trades": len(wins),
         "losing_trades": len(losses),
-        "breakeven_trades": len(ledger.trades) - len(wins) - len(losses),
-        "win_rate_pct": dec(len(wins)) / len(ledger.trades) * 100
-        if ledger.trades
-        else None,
+        "breakeven_trades": len(trades) - len(wins) - len(losses),
+        "win_rate_pct": dec(len(wins)) / len(trades) * 100 if trades else None,
         "profit_factor": gross_profit / gross_loss if gross_loss else None,
         "profit_factor_status": "finite"
         if gross_loss
@@ -669,16 +704,14 @@ def statistics(result):
         else "undefined_no_profits_or_losses",
         "max_drawdown": drawdown,
         "max_drawdown_pct": drawdown_pct,
-        "known_cash_costs": ledger.costs,
-        "embedded_slippage": ledger.embedded_slippage,
-        "embedded_spread_estimate": ledger.embedded_spread,
-        "remaining_positions": int(ledger.position is not None),
-        "remaining_base_units": ledger.position.size if ledger.position else ZERO,
-        "remaining_notional_usd": ledger.position.size * final["mark_price"]
-        if ledger.position
-        else ZERO,
+        "known_cash_costs": cash_costs,
+        "embedded_slippage": slippage,
+        "embedded_spread_estimate": spread,
+        "remaining_positions": remaining_positions,
+        "remaining_base_units": remaining_units,
+        "remaining_notional_usd": remaining_notional,
         "used_margin": final["used_margin"],
         "available_funds": final["available_funds"],
-        "rejected_entries": len(ledger.rejections),
-        "margin_breach_observations": ledger.margin_breaches,
+        "rejected_entries": rejected,
+        "margin_breach_observations": breaches,
     }

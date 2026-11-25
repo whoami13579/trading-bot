@@ -5,14 +5,30 @@ preserved defaults, builds the strategy, and states the defaults that make the
 unified CLI reproduce the strategy's existing backtest command.
 
 Adding a strategy = a pure ``target(completed_candles[, position])`` class with a
-``warmup`` plus one ``StrategyAdapter`` entry in ``ADAPTERS``.
+``warmup`` plus one ``StrategyAdapter`` entry in ``ADAPTERS``. A strategy whose
+native execution is ``"grid"`` manages many limit orders and runs only on the
+grid execution model.
 """
 
+import argparse
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Callable
 
 from trading_bot.strategies.donchian import DonchianStrategy
+from trading_bot.strategies.grid import DEFAULT_LOOKBACK, AutoGridStrategy, GridStrategy
 from .strategy import HmaStrategy
+
+
+def decimal_option(value):
+    """argparse type for exact finite Decimal prices and quantities."""
+    try:
+        result = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        raise argparse.ArgumentTypeError("A finite numeric value is required") from None
+    if not result.is_finite():
+        raise argparse.ArgumentTypeError("A finite numeric value is required")
+    return result
 
 
 @dataclass(frozen=True)
@@ -36,6 +52,9 @@ class StrategyAdapter:
     time_frame: str
     data_source: str
     execution: str
+    # Optional argument-combination check on the explicit parameters; returns an
+    # error message, raised as a usage error before any data access.
+    check: Callable[[dict], str | None] | None = None
 
     def defaults(self):
         return {p.dest: p.default for p in self.parameters}
@@ -47,7 +66,9 @@ class StrategyAdapter:
         return self.factory(**merged)
 
     def values(self, strategy):
-        return {p.dest: getattr(strategy, _ATTRIBUTE.get(p.dest, p.dest))
+        # A parameter the built strategy does not carry (e.g. grid bounds in
+        # automatic mode) is recorded as None.
+        return {p.dest: getattr(strategy, _ATTRIBUTE.get(p.dest, p.dest), None)
                 for p in self.parameters}
 
 
@@ -94,7 +115,72 @@ DONCHIAN = StrategyAdapter(
     execution="research",
 )
 
-ADAPTERS = {adapter.key: adapter for adapter in (HMA, DONCHIAN)}
+def _grid(ema_period, grid_lower, grid_upper, grid_intervals, level_size, max_position,
+          grid_lookback):
+    common = dict(ema_period=ema_period, grid_intervals=grid_intervals,
+                  level_size=level_size, max_position=max_position)
+    if grid_lower is None and grid_upper is None:
+        return AutoGridStrategy(
+            DEFAULT_LOOKBACK if grid_lookback is None else grid_lookback, **common
+        )
+    return GridStrategy(grid_lower, grid_upper, **common)
+
+
+def _check_grid(parameters):
+    lower, upper = parameters.get("grid_lower"), parameters.get("grid_upper")
+    if (lower is None) != (upper is None):
+        given, missing = (("--grid-lower", "--grid-upper") if upper is None
+                          else ("--grid-upper", "--grid-lower"))
+        return (
+            f"{given} was given without {missing}: pass both for manual bounds, or "
+            "neither for automatic bounds from the last --grid-lookback candles "
+            f"(default {DEFAULT_LOOKBACK})"
+        )
+    if lower is not None and parameters.get("grid_lookback") is not None:
+        return ("--grid-lookback applies only to automatic bounds; omit it or omit "
+                "--grid-lower/--grid-upper")
+    return None
+
+
+def _describe_grid(s):
+    if isinstance(s, AutoGridStrategy):
+        bounds = f"automatic bounds from the last {s.grid_lookback} candles"
+    else:
+        bounds = f"{s.grid_lower}-{s.grid_upper}"
+    return f"Grid (EMA {s.ema_period} long / short), {s.grid_intervals} intervals {bounds}"
+
+
+GRID = StrategyAdapter(
+    key="grid",
+    parameters=(
+        Parameter(("--ema-period",), "ema_period", 50, int,
+                  help="EMA lookback in completed candles; flat until warm (default 50)"),
+        Parameter(("--grid-lower",), "grid_lower", None, decimal_option,
+                  help="Lowest grid price; give with --grid-upper for manual bounds, "
+                  "omit both for automatic bounds"),
+        Parameter(("--grid-upper",), "grid_upper", None, decimal_option,
+                  help="Highest grid price; give with --grid-lower for manual bounds"),
+        Parameter(("--grid-lookback",), "grid_lookback", None, int,
+                  help="Automatic bounds only: lowest low / highest high of the last N "
+                  "completed --time-frame candles ending at or before --start "
+                  f"(default {DEFAULT_LOOKBACK})"),
+        Parameter(("--grid-intervals",), "grid_intervals", 10, int,
+                  help="Evenly spaced intervals between the bounds (default 10)"),
+        Parameter(("--level-size",), "level_size", Decimal(100), decimal_option,
+                  help="EUR base units per grid level; replaces --size (default 100)"),
+        Parameter(("--max-position",), "max_position", Decimal(500), decimal_option,
+                  help="Cap on open lot + working entry units in EUR (default 500)"),
+    ),
+    factory=_grid,
+    describe=_describe_grid,
+    signal_price="midpoint close when bid/ask exists, otherwise source close",
+    time_frame="HOUR",
+    data_source="dukascopy",
+    execution="grid",
+    check=_check_grid,
+)
+
+ADAPTERS = {adapter.key: adapter for adapter in (HMA, DONCHIAN, GRID)}
 
 
 def adapter_for(key):
