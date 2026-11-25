@@ -3,8 +3,8 @@
 from datetime import timedelta
 from zoneinfo import ZoneInfo
 from .models import DataError, utc
-from datetime import datetime
-from .timeframes import duration, floor_time
+from datetime import datetime, timezone
+from .timeframes import duration, floor_time, resample
 
 
 def expected_open(stamp, source):
@@ -99,3 +99,76 @@ def active_gap(start, end, timeframe="MINUTE_30"):
             moment += probe
         cursor += step
     return False
+
+
+def slot_expected(start, step):
+    """True if any part of the slot [start, start + step) lies in the FX week.
+
+    Uses the DST-aware New York Sunday 17:00 to Friday 17:00 session, probing
+    every min(step, 30 minutes) exactly as ``active_gap`` does.
+    """
+    probe = min(step, timedelta(minutes=30))
+    moment = start
+    while moment < start + step:
+        if expected_open(moment, "dukascopy"):
+            return True
+        moment += probe
+    return False
+
+
+def completed_groups(candles, timeframe, *, as_of):
+    """Constituents of each ``timeframe`` bucket that had completely closed by ``as_of``.
+
+    ``candles`` are completed candles of one finer timeframe, ordered oldest
+    first (as the engine supplies them). Buckets are UTC epoch-aligned, as in
+    ``timeframes.resample``. A bucket is returned only if it ended at or before
+    ``as_of`` and every finer slot inside it that the FX calendar expects to
+    trade is present. A bucket still in progress at ``as_of``, a bucket cut off
+    by the first candle and a bucket with a missing candle are excluded. Nothing
+    is filled, and no candle after ``as_of`` is read.
+    """
+    if not candles:
+        return ()
+    step = duration(candles[0].timeframe)
+    size = int(duration(timeframe).total_seconds())
+    if size < step.total_seconds() or size % int(step.total_seconds()):
+        raise DataError("Cannot upsample or use incompatible candle intervals")
+    limit = utc(as_of).timestamp()
+    groups, present = [], set()
+    for candle in candles:
+        if candle.end.timestamp() > limit:
+            raise DataError("Candle completes after the decision time")
+        present.add(candle.timestamp)
+        seconds = int(candle.timestamp.timestamp())
+        bucket = seconds - seconds % size
+        if groups and groups[-1][0] == bucket:
+            groups[-1][1].append(candle)
+        elif groups and groups[-1][0] > bucket:
+            raise DataError("Candles must be ordered oldest first")
+        else:
+            groups.append((bucket, [candle]))
+    result = []
+    for bucket, members in groups:
+        if bucket + size > limit:
+            continue  # Still in progress at the decision time.
+        start = datetime.fromtimestamp(bucket, timezone.utc)
+        cursor, complete = start, True
+        while cursor < start + timedelta(seconds=size):
+            if cursor not in present and slot_expected(cursor, step):
+                complete = False
+                break
+            cursor += step
+        if complete:
+            result.append(tuple(members))
+    return tuple(result)
+
+
+def completed_aggregates(candles, timeframe, *, as_of):
+    """OHLC candles of ``completed_groups``: the same aggregation as ``resample``."""
+    aggregated = []
+    for members in completed_groups(candles, timeframe, as_of=as_of):
+        bucket = floor_time(members[0].timestamp, timeframe)
+        aggregated.extend(
+            c for c in resample(members, timeframe, completed_before=bucket + duration(timeframe))
+        )
+    return tuple(aggregated)

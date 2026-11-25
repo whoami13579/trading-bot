@@ -273,27 +273,62 @@ def build_parser():
         action="store_true",
         help="Acknowledge evaluating non-preregistered parameters on a frozen holdout",
     )
-    for adapter in ADAPTERS.values():
-        group = parser.add_argument_group(f"{adapter.key} parameters")
-        for p in adapter.parameters:
-            group.add_argument(
-                *p.flags, dest=p.dest, type=p.type, choices=p.choices, default=None,
-                help=p.help,
-            )
+    shared, groups = None, {}
+    for dest, (parameter, owners) in strategy_parameters().items():
+        if len(owners) > 1:
+            shared = shared or parser.add_argument_group(
+                "parameters shared by several strategies (default depends on --strategy)")
+            group = shared
+            label = parameter.help.rsplit(" (default", 1)[0]
+            defaults = ", ".join(f"{a.key} {_shown(a, dest)}" for a in owners)
+            help_text = f"{label}; defaults: {defaults}"
+        else:
+            key = owners[0].key
+            if key not in groups:
+                groups[key] = parser.add_argument_group(f"{key} parameters")
+            group = groups[key]
+            help_text = parameter.help
+        group.add_argument(
+            *parameter.flags, dest=dest, type=parameter.type, choices=parameter.choices,
+            default=None, help=help_text,
+        )
     return parser
+
+
+def strategy_parameters():
+    """Each strategy option once: dest -> (parameter, adapters declaring it).
+
+    Adapters that share an option must declare it identically (flags, type and
+    choices); only the default may differ.
+    """
+    found = {}
+    for adapter in ADAPTERS.values():
+        for p in adapter.parameters:
+            if p.dest in found:
+                first = found[p.dest][0]
+                if (first.flags, first.type, first.choices) != (p.flags, p.type, p.choices):
+                    raise ValueError(f"Inconsistent shared strategy option {p.flags[0]}")
+                found[p.dest][1].append(adapter)
+            else:
+                found[p.dest] = (p, [adapter])
+    return found
+
+
+def _shown(adapter, dest):
+    return next(p.default for p in adapter.parameters if p.dest == dest)
 
 
 def request_from_args(args):
     adapter = ADAPTERS[args.strategy]
     parameters = {}
-    for other in ADAPTERS.values():
-        for p in other.parameters:
-            value = getattr(args, p.dest)
-            if value is None:
-                continue
-            if other is not adapter:
-                raise PlanError(f"{p.flags[0]} applies only to --strategy {other.key}")
-            parameters[p.dest] = value
+    for dest, (p, owners) in strategy_parameters().items():
+        value = getattr(args, dest)
+        if value is None:
+            continue
+        if adapter not in owners:
+            keys = ", ".join(owner.key for owner in owners)
+            raise PlanError(f"{p.flags[0]} applies only to --strategy {keys}")
+        parameters[dest] = value
     return BacktestRequest(
         strategy=args.strategy,
         parameters=parameters,
@@ -331,7 +366,10 @@ def listing():
                     if s.tradable and not s.supports(registry.BACKTEST)]
     rows += ["", "Defaults shown are used when --time-frame, --data-source or "
              "--execution-model is omitted; the default strategy is hma.",
-             f"No historical backtest (DEMO/LIVE trading via tb-trade): {', '.join(trading_only)}"]
+             "Strategy parameters and their defaults: tb-backtest --help"]
+    if trading_only:
+        rows.append(f"No historical backtest (DEMO/LIVE trading via tb-trade): "
+                    f"{', '.join(trading_only)}")
     return "\n".join(rows)
 
 

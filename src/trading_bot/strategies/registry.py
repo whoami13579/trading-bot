@@ -78,15 +78,17 @@ STRATEGIES = {
         Strategy(
             "moving-average",
             "Price vs. 20-candle moving average (1-minute)",
-            frozenset((DEMO, LIVE)),
+            frozenset((DEMO, LIVE, BACKTEST)),
             trading_entry="trading_bot.strategies.moving_average:main",
+            backtest_adapter="moving-average",
             legacy_commands=("trading-bot-moving-average", "main.py"),
         ),
         Strategy(
             "sma",
             "SMA 9/21 crossover (1-minute)",
-            frozenset((DEMO, LIVE)),
+            frozenset((DEMO, LIVE, BACKTEST)),
             trading_entry="trading_bot.strategies.sma:main",
+            backtest_adapter="sma",
             legacy_commands=("trading-bot-sma", "sma.py"),
         ),
         Strategy(
@@ -100,15 +102,17 @@ STRATEGIES = {
         Strategy(
             "ema-hma",
             "EMA 200/20 trend filter with HMA confirmation",
-            frozenset((DEMO, LIVE)),
+            frozenset((DEMO, LIVE, BACKTEST)),
             trading_entry="trading_bot.strategies.ema_hma:main",
+            backtest_adapter="ema-hma",
             legacy_commands=("trading-bot-ema-hma", "ema_hma.py"),
         ),
         Strategy(
             "multiple-hma",
-            "Multi-timeframe SMA consensus with HMA confirmation",
-            frozenset((DEMO, LIVE)),
+            "4H 13-indicator vote with 30-minute HMA confirmation",
+            frozenset((DEMO, LIVE, BACKTEST)),
             trading_entry="trading_bot.strategies.multiple_hma:main",
+            backtest_adapter="multiple-hma",
             legacy_commands=("trading-bot-multiple-hma", "multiple_hma.py"),
         ),
         Strategy(

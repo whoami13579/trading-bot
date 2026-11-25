@@ -16,11 +16,11 @@ mode.
 
 | Strategy | DEMO | LIVE | Backtesting | Description |
 | --- | --- | --- | --- | --- |
-| `moving-average` | Yes | Yes | No | Price vs. 20-candle moving average (1-minute) |
-| `sma` | Yes | Yes | No | SMA 9/21 crossover (1-minute) |
+| `moving-average` | Yes | Yes | Yes | Price vs. 20-candle moving average (1-minute) |
+| `sma` | Yes | Yes | Yes | SMA 9/21 crossover (1-minute) |
 | `hma` | Yes | Yes | Yes | Hull moving average, configured side / flat |
-| `ema-hma` | Yes | Yes | No | EMA 200/20 trend filter with HMA confirmation |
-| `multiple-hma` | Yes | Yes | No | Multi-timeframe SMA consensus with HMA confirmation |
+| `ema-hma` | Yes | Yes | Yes | EMA 200/20 trend filter with HMA confirmation |
+| `multiple-hma` | Yes | Yes | Yes | 4H 13-indicator vote with 30-minute HMA confirmation |
 | `donchian` | No | No | Yes | Donchian channel breakout (historical simulation only) |
 | `grid` | No | No | Yes | Candle-directed fixed grid (historical simulation only) |
 
@@ -40,7 +40,7 @@ every mode, before importing any strategy or broker code.
 | `tb-trade --strategy NAME` | Unified DEMO/LIVE strategy runner | **Order-capable** (DEMO by default) |
 | `tb-trade --strategy NAME --REAL` | Same strategy on LIVE | **Real-money orders**, behind the LIVE gate |
 | `tb-trade --strategy hma --read-only` | HMA DEMO session/history diagnostics | DEMO reads, no orders |
-| `tb-backtest --strategy NAME` | Historical simulation (`hma`, `donchian`, `grid`) | None |
+| `tb-backtest --strategy NAME` | Historical simulation of any registered strategy | None |
 | `tb-check-offline` | Full offline test suite under network/credential guards | None |
 | `tb-check-environment` | Offline environment, dependency and help-path checks | None |
 | `tb-demo-readonly` | Explicit DEMO connection checks | DEMO reads, no orders |
@@ -136,16 +136,37 @@ name is not part of the configuration hash, so both names produce identical
 reports and hashes.
 
 ```bash
+uv run tb-backtest --strategy moving-average
+uv run tb-backtest --strategy sma
 uv run tb-backtest --strategy hma
+uv run tb-backtest --strategy ema-hma
+uv run tb-backtest --strategy multiple-hma
 uv run tb-backtest --strategy donchian
 uv run tb-backtest --strategy grid                                   # automatic bounds
 uv run tb-backtest --strategy grid --grid-lower 1.15 --grid-upper 1.19
 uv run tb-backtest --strategy grid --grid-lookback 100 --grid-intervals 20
 ```
 
+Strategy options belong to the strategies that declare them. `--hma-period`
+is shared by hma (default 16), ema-hma (16) and multiple-hma (20). Any other
+strategy rejects a foreign option before loading data. The four strategies added
+with issue #7 reuse the online signal functions and defaults; their rules,
+options, warm-ups and simulation assumptions are in
+[strategy backtesting](strategy-backtesting.md).
+
+| Strategy | Backtest options (defaults) | Default timeframe, data, execution |
+| --- | --- | --- |
+| `moving-average` | `--average-period` (20) | `MINUTE`, dukascopy, continuous |
+| `sma` | `--fast-period` (9), `--slow-period` (21) | `MINUTE`, dukascopy, continuous |
+| `hma` | `--hma-period` (16), `--direction` (`BUY`) | `MINUTE_30`, dukascopy, continuous |
+| `ema-hma` | `--long-period` (200), `--short-period` (20), `--hma-period` (16) | `MINUTE_5`, dukascopy, continuous |
+| `multiple-hma` | `--hma-period` (20), `--long-term` (`HOUR_4`); `--time-frame` is the signal timeframe | `MINUTE_30`, dukascopy, continuous |
+| `donchian` | `--entry-lookback` (20), `--exit-lookback` (10) | `HOUR`, snapshot, research |
+| `grid` | `--ema-period`, `--grid-lower`/`--grid-upper` or `--grid-lookback`, `--grid-intervals`, `--level-size`, `--max-position` | `HOUR`, dukascopy, grid |
+
 See [historical backtesting](backtesting.md), the
 [framework guide](backtesting-framework.md) and
-[grid backtesting](grid-backtesting.md) for all options and defaults.
+[grid backtesting](grid-backtesting.md) for the common options.
 
 ## Backward-compatible commands and migration
 
@@ -220,9 +241,12 @@ strategies/<name>.py main()  ──►  config/trading_config.create_trading_api
 2. Add one `Strategy(...)` entry to `STRATEGIES` in `registry.py`. List only the
    modes that already work. Use `{DEMO}` alone until LIVE is reviewed, because
    `tb-trade` then refuses `--REAL` for it.
-3. For backtesting, add a `StrategyAdapter` to `ADAPTERS` in
-   `backtesting/adapters.py`, using the same key. `tb-backtest` picks it up
-   automatically (see [the framework guide](backtesting-framework.md)).
+3. For backtesting, put the signal rule in a broker-free module
+   (`strategies/indicators.py` or `strategies/signals.py`) and call it from both
+   the online loop and a candle strategy class in `backtesting/strategy.py`. Then
+   add a `StrategyAdapter` to `ADAPTERS` in `backtesting/adapters.py`, using the
+   same key. `tb-backtest` picks it up automatically, including options it shares
+   with other strategies (see [the framework guide](backtesting-framework.md)).
 4. Add offline tests and update the capability matrix in this document and the
    README. The registry tests show which expectations to extend.
 

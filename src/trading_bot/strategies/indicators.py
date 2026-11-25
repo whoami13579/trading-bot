@@ -82,29 +82,33 @@ def calculate_ema(prices, span, smoothing=2)->list[float]:
 
     return ema_values
 
-def calculate_multiple(tradingApi: TradingApi, symbol: str, time_frame: str)->str:
+# The multiple-indicator vote reads exactly this many closes of its timeframe.
+MULTIPLE_HISTORY = 210
+MULTIPLE_PERIODS = (10, 20, 30, 50, 100, 200)
+MULTIPLE_HMA_PERIOD = 9 * 3
+
+
+def multiple_signal(prices: list[float]) -> str:
+    """Thirteen votes: six SMAs, six EMAs and an HMA27 slope; BUY/SELL above +/-1, else Neutral."""
     buy_or_sell = 0
-    prices = tradingApi.getHistoricalPricesList(symbol, time_frame, 210)
-    periods = [10, 20, 30, 50, 100, 200]
-    if len(prices) < max(periods):
+    if len(prices) < max(MULTIPLE_PERIODS):
         raise ValueError("Not enough history for the multiple-indicator signal")
 
-    for period in periods:
+    for period in MULTIPLE_PERIODS:
         sma_value = calculate_sma(prices, period)
         if prices[-1] < sma_value:
             buy_or_sell -= 1
         else:
             buy_or_sell += 1
 
-    for period in periods:
+    for period in MULTIPLE_PERIODS:
         ema_values = calculate_ema(prices, period)
         if prices[-1] < ema_values[-1]:
             buy_or_sell -= 1
         else:
             buy_or_sell += 1
 
-    hma_period = 9 * 3
-    hma_values = calculate_hma(prices, hma_period)
+    hma_values = calculate_hma(prices, MULTIPLE_HMA_PERIOD)
     if len(hma_values) < 2:
         raise ValueError("Not enough history for an HMA slope signal")
     if hma_values[-2] < hma_values[-1]:
@@ -118,6 +122,11 @@ def calculate_multiple(tradingApi: TradingApi, symbol: str, time_frame: str)->st
         return "SELL"
     else:
         return "Neutral"
+
+
+def calculate_multiple(tradingApi: TradingApi, symbol: str, time_frame: str)->str:
+    prices = tradingApi.getHistoricalPricesList(symbol, time_frame, MULTIPLE_HISTORY)
+    return multiple_signal(prices)
 
 def hma_signal(prices: list[float], hma_period: int) -> str:
     """The live HMA slope rule; a flat slope is SELL, preserving existing behavior."""
@@ -142,8 +151,8 @@ def calculate_hma_result(tradingApi: TradingApi, symbol: str, time_frame: str, h
     return None if prices is None else hma_signal(prices, hma_period)
 
 
-def calculate_two_ema_result(tradingApi: TradingApi, symbol: str, time_frame: str, long_period: int, short_period: int)->str:
-    prices = tradingApi.getHistoricalPricesList(symbol, time_frame, long_period)
+def two_ema_signal(prices: list[float], long_period: int, short_period: int) -> str:
+    """EMA trend rule: SELL when EMA(short) < EMA(long) over exactly these prices, else BUY."""
     long_period_ema_values = calculate_ema(prices, long_period)
     short_period_ema_values = calculate_ema(prices, short_period)
 
@@ -154,3 +163,8 @@ def calculate_two_ema_result(tradingApi: TradingApi, symbol: str, time_frame: st
         return "SELL"
     else:
         return "BUY"
+
+
+def calculate_two_ema_result(tradingApi: TradingApi, symbol: str, time_frame: str, long_period: int, short_period: int)->str:
+    prices = tradingApi.getHistoricalPricesList(symbol, time_frame, long_period)
+    return two_ema_signal(prices, long_period, short_period)

@@ -68,7 +68,7 @@ Modules stay flat inside `backtesting/` so the Donchian study's code fingerprint
 The shared `engine.simulate()` loop is parameterized by an `ExecutionPolicy`, a
 quote transform and a ledger. The two existing semantics are explicit models:
 
-| | `continuous` (HMA default) | `research` (Donchian default) |
+| | `continuous` (default except Donchian and grid) | `research` (Donchian default) |
 | --- | --- | --- |
 | Decision → fill | completed close → next observed open | same |
 | First fill | warm-up close may queue the first scored open | first decision is the first scored close |
@@ -120,18 +120,22 @@ names produce identical reports and configuration hashes.
 
 | Option | Default | Notes |
 | --- | --- | --- |
-| `--strategy` | `hma` | `hma`, `donchian`, `grid` |
+| `--strategy` | `hma` | `moving-average`, `sma`, `hma`, `ema-hma`, `multiple-hma`, `donchian`, `grid` |
 | `--symbol` | `EURUSD` | only EURUSD is verified |
 | `--size` | 100 | EUR base units (grid: rejected, use `--level-size`) |
-| `--time-frame` | HMA `MINUTE_30`, Donchian/grid `HOUR` | `MINUTE` … `DAY` |
-| `--data-source` | HMA/grid `dukascopy`, Donchian `snapshot` | `dukascopy`, `yfinance`, `snapshot` |
+| `--time-frame` | moving-average/sma `MINUTE`, ema-hma `MINUTE_5`, HMA/multiple-hma `MINUTE_30`, Donchian/grid `HOUR` | `MINUTE` … `DAY` |
+| `--data-source` | Donchian `snapshot`, all others `dukascopy` | `dukascopy`, `yfinance`, `snapshot` |
 | `--snapshot` | `.cache/donchian/eurusd-30m.json.gz` | study snapshot |
 | `--start`, `--end`, `--lookback-days` | providers: last 30 complete UTC days; snapshot: 2023-11-01 to 2026-11-01 | UTC, end exclusive |
 | `--initial-balance`, `--leverage` | 1000, 1 | USD; simulated collateral |
-| `--execution-model` | HMA `continuous`, Donchian `research`, grid `grid` | `grid` only with grid strategies |
+| `--execution-model` | `continuous`; Donchian `research`; grid `grid` | `grid` only with grid strategies |
 | `--commission-per-order`, `--slippage-pips`, `--financing-usd-per-unit-day` | unmodeled | continuous and grid models |
 | `--cost-case` | `base` | research model only: `base`, `high`, `financing` |
-| `--hma-period`, `--direction` | 16, `BUY` | HMA only |
+| `--hma-period`, `--direction` | 16, `BUY` | `--hma-period`: hma 16, ema-hma 16, multiple-hma 20; `--direction`: hma only |
+| `--average-period` | 20 | moving-average only |
+| `--fast-period`, `--slow-period` | 9, 21 | sma only |
+| `--long-period`, `--short-period` | 200, 20 | ema-hma only |
+| `--long-term` | `HOUR_4` | multiple-hma only; whole multiple of `--time-frame` |
 | `--entry-lookback`, `--exit-lookback` | 20, 10 | Donchian only |
 | `--ema-period`, `--grid-lower`, `--grid-upper`, `--grid-lookback`, `--grid-intervals`, `--level-size`, `--max-position` | 50, automatic, automatic, 100, 10, 100, 500 | grid only: both bounds (manual) or neither (automatic from the lookback); see [grid backtesting](grid-backtesting.md) |
 | `--cache-dir`, `--output-dir`, `--refresh-data`, `--allow-data-gaps` | as before | |
@@ -325,31 +329,26 @@ grid) declare `execution="grid"` in their adapter and run on `GridExecution`
 (`backtesting/grid.py`), which reuses the same data, cost options, statistics and
 report contract. See [grid backtesting](grid-backtesting.md).
 
-## Other strategies: integration assessment
+## The other order-capable strategies
 
-None were added, because their exact live semantics cannot yet be reproduced
-and tested on completed candles without inventing behavior.
+Moving-average, sma, ema-hma and multiple-hma were integrated in issue #7, using
+the decisions this section previously listed as open:
 
-- **SMA (`sma.py`) and moving average (`moving_average.py`)**: poll every 60 s and
-  push the latest one-minute *open* ask into a rolling list (not completed-candle
-  closes). Signals call `createPosition` for the opposite side without closing the
-  existing position, so the resulting exposure depends on the account's
-  hedging/netting mode; `moving_average.py` also has a blocking initial wait loop.
-  Needed: a decision on polling vs completed-candle timing, the open-price input,
-  and the broker netting rule, then an adapter plus reversal-semantics tests.
-- **EMA + HMA (`ema_hma.py`)**: closest candidate. Single timeframe (default 5m),
-  ask closes; EMA(200)/EMA(20) over exactly the last 200 prices (so EMA200 is
-  just its SMA seed) and HMA16 over 48. When both agree it opens that side only if
-  flat (an existing opposite position is held); when they disagree it closes.
-  This maps to a position-aware `target`, but the live runner reads the latest 200
-  candles at wall-clock targets, which may include the forming candle. Needed:
-  confirm the completed-candle convention (as was accepted for HMA), then pin the
-  hold-on-agreement rule and the 200-price EMA window in tests.
-- **Multiple HMA (`multiple_hma.py`)**: combines a 4H vote (6 SMAs, 6 EMAs and an
-  HMA27 slope over 210 prices; it can return `"Neutral"`) with a 30m HMA20 slope.
-  Needed: multi-timeframe support (aligning the latest *completed* 4H candle at
-  every 30m decision without look-ahead), a defined `"Neutral"` behavior and
-  210-candle warm-up on 4H data.
+- **Timing:** completed candles only, as accepted for HMA. Moving-average and
+  sma read candle opens, as online, and decide at the candle's close.
+- **Opposite orders** of moving-average and sma: modeled as the long/short
+  reversal that their `status` tracking describes. The account-mode dependence
+  is documented.
+- **EMA + HMA:** the hold-on-agreement rule and the exact 200-close EMA window
+  are pinned by tests.
+- **Multiple HMA:** 4H candles are aggregated causally from completed 30-minute
+  candles. "Neutral" closes the position. Until 210 complete 4H candles exist,
+  no decision is made.
+
+Their signal rules are shared with the online code (`strategies/indicators.py`,
+`strategies/signals.py`); the candle classes are in `backtesting/strategy.py`.
+Details, differences from the online processes and reference results:
+[strategy backtesting](strategy-backtesting.md).
 
 ## Limitations and next steps
 
@@ -362,6 +361,6 @@ and tested on completed candles without inventing behavior.
 - No exceptional-holiday calendar; such gaps surface as audit failures or gap events.
 - Downloads with warm-ups above 48 candles are cached separately (Dukascopy
   bucket caching still avoids re-downloading most raw data; yfinance does not).
-- Next: multi-timeframe support (Multiple HMA), the EMA+HMA adapter once the
-  timing convention is confirmed, user-supplied snapshot export from provider data,
-  and broker cost schedules.
+- Multi-timeframe rules aggregate their higher timeframe from the signal candles;
+  no second dataset is loaded.
+- Next: user-supplied snapshot export from provider data and broker cost schedules.

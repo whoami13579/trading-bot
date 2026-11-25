@@ -1,8 +1,10 @@
 # Historical HMA backtesting
 
-> HMA, Donchian and Grid share one backtesting framework and one CLI
-> (`tb-backtest --strategy hma|donchian|grid`, also installed as
-> `trading-bot-backtest`). This page documents the HMA
+> All seven strategies (moving-average, sma, hma, ema-hma, multiple-hma, donchian
+> and grid) share one backtesting framework and one CLI (`tb-backtest --strategy
+> NAME`, also installed as `trading-bot-backtest`); see
+> [strategy backtesting](strategy-backtesting.md) for the four added in issue #7.
+> This page documents the HMA
 > continuous mode, data providers and accounting, which are unchanged. See
 > [backtesting-framework.md](backtesting-framework.md) for the shared architecture,
 > execution models, report format and compatibility notes.

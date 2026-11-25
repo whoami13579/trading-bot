@@ -515,3 +515,42 @@ documentation, once external callers and stored operational commands use the
   audit hook fails on any strategy, `trading_bot.api`, `trading_bot.risk` or
   credential-loading import, any socket connection or DNS lookup, and any `.env`
   or private-state access.
+
+## Backtesting for every order-capable strategy (issue #7, extended scope)
+
+At the reviewer's request, issue #7 also gave moving-average, sma, ema-hma and
+multiple-hma a historical backtest. Every registered strategy now supports
+`tb-backtest`, and Donchian and Grid remain simulation-only. Details:
+[strategy backtesting](strategy-backtesting.md).
+
+- **Shared rules:** `strategies/signals.py` (new, broker-free) holds the decision
+  and position rules and the default periods and timeframes. Pure
+  `two_ema_signal` and `multiple_signal` were extracted in
+  `strategies/indicators.py`; their former API wrappers now call them.
+  `moving_average.py`, `sma.py`, `ema_hma.py` and `multiple_hma.py` import their
+  defaults from `signals`, and the moving-average and sma loops call the shared
+  side functions. Their control flow, order calls, printing and error handling
+  are unchanged. Offline tests compare the extracted functions with the former
+  formulas, and drive each online loop with a mocked broker against the backtest
+  decisions.
+- **Simulation:** four candle classes in `backtesting/strategy.py`. Causal
+  higher-timeframe aggregation (`calendar.completed_groups` and
+  `completed_aggregates`) uses only buckets that had closed and are complete;
+  nothing is filled.
+- **Adapters:** four new `StrategyAdapter`s. Each adapter now carries its own
+  parameter-to-attribute mapping, which replaces a module-level map whose
+  `hma_period` entry would have misread other strategies. An opt-in
+  `uses_time_frame` lets `plan()` pass the signal timeframe to multiple-hma.
+  `plan()` now resolves the timeframe before building the strategy.
+- **CLI:** an option declared by several strategies (`--hma-period`) is
+  registered once. Its default depends on `--strategy`, and other strategies
+  reject it with exit 2, as before.
+- **Registry:** the four strategies now declare the `backtest` mode with an
+  adapter of the same key. The registry tests require the backtest set to equal
+  `ADAPTERS`.
+
+Unchanged: HMA, Donchian and Grid results and configuration hashes (pinned tests,
+plus identical real-data reports before and after), the online strategies'
+behavior, and every safety control. Offline tests: 687 after the CLI commit,
+719 after this one (32 new in `tests/test_strategy_backtests.py`). One existing
+assertion of the adapter key set was updated to the seven strategies.

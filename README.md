@@ -1,7 +1,7 @@
 # Trading bot
 
 Capital.com trading strategies, guarded DEMO/LIVE integration tools, and a
-unified multi-strategy historical backtester (HMA, Donchian and Grid). Python
+unified multi-strategy historical backtester covering every strategy. Python
 **3.12** and the existing **uv** lock workflow are used throughout.
 
 Strategies run in three separate ways:
@@ -37,16 +37,19 @@ network access. Keep `.env` and integration state private and ignored.
 
 | Strategy | DEMO | LIVE | Backtesting |
 | --- | --- | --- | --- |
-| `moving-average` | Yes | Yes | No |
-| `sma` | Yes | Yes | No |
+| `moving-average` | Yes | Yes | Yes |
+| `sma` | Yes | Yes | Yes |
 | `hma` | Yes | Yes | Yes |
-| `ema-hma` | Yes | Yes | No |
-| `multiple-hma` | Yes | Yes | No |
+| `ema-hma` | Yes | Yes | Yes |
+| `multiple-hma` | Yes | Yes | Yes |
 | `donchian` | No | No | Yes |
 | `grid` | No | No | Yes |
 
-Donchian and Grid are historical simulations only; `tb-trade` rejects them before
-any broker access. Each strategy is implemented once under
+Every strategy can be backtested. Donchian and Grid are historical simulations
+only; `tb-trade` rejects them before any broker access. The backtests reuse the
+online strategies' own signal functions and defaults. Their exact rules,
+parameters, warm-ups and the documented differences from live polling are in
+[strategy backtesting](docs/strategy-backtesting.md). Each strategy is implemented once under
 `src/trading_bot/strategies/` and declared once in
 `src/trading_bot/strategies/registry.py`. The [CLI guide](docs/cli.md) covers
 every option and default, which commands can place orders, the registry design,
@@ -103,7 +106,7 @@ in the repository root.
 | HMA DEMO read-only diagnostics | `uv run tb-trade --strategy hma --read-only --cycles 1` | `uv run hma.py --read-only --cycles 1` |
 | DEMO read-only preflight | `uv run tb-demo-roundtrip --read-only` | `uv run scripts/demo_roundtrip.py --read-only`, `uv run test_api_key.py --read-only` |
 | LIVE read-only preflight | `uv run tb-live-preflight --REAL` | `uv run scripts/live_preflight.py --REAL`, `uv run test_live_api.py --REAL` |
-| Historical simulation, no broker access | `uv run tb-backtest --strategy hma\|donchian\|grid` | `trading-bot-backtest`, `uv run hma.py --backtest`, `uv run src/trading_bot/strategies/donchian.py --backtest`, `uv run scripts/backtest.py` |
+| Historical simulation, no broker access | `uv run tb-backtest --strategy NAME` (any strategy) | `trading-bot-backtest`, `uv run hma.py --backtest`, `uv run src/trading_bot/strategies/donchian.py --backtest`, `uv run scripts/backtest.py` |
 | Legacy read-only broker-history diagnostic | `uv run test_strategy.py` | — |
 
 The account-access commands above are documentation, not part of offline validation.
@@ -131,6 +134,9 @@ cost models and report:
 ```bash
 uv run tb-backtest --list-strategies
 uv run tb-backtest --strategy hma --symbol EURUSD --time-frame HOUR --size 100
+uv run tb-backtest --strategy sma --start 2025-09-01 --end 2025-10-01 --slippage-pips 0.1
+uv run tb-backtest --strategy ema-hma --long-period 200 --short-period 20 --hma-period 16
+uv run tb-backtest --strategy multiple-hma --time-frame MINUTE_30 --long-term HOUR_4
 uv run tb-backtest --strategy donchian --symbol EURUSD --time-frame HOUR --size 100
 uv run tb-backtest --strategy donchian --cost-case high
 uv run tb-backtest --strategy hma --end 2026-11-12 --slippage-pips 0.2
@@ -189,6 +195,7 @@ and [the unified framework, compatibility notes and strategy integration guide](
 ## Documentation
 
 - [Command-line interface, strategy registry and migration](docs/cli.md)
+- [Backtesting the order-capable strategies](docs/strategy-backtesting.md)
 - [Setup and dependencies](docs/setup.md)
 - [Historical backtesting](docs/backtesting.md)
 - [Unified backtesting framework](docs/backtesting-framework.md)

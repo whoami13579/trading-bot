@@ -1,6 +1,7 @@
 from trading_bot.api.client import TradingApi
 from trading_bot.config.trading_config import add_trading_arguments, create_trading_api
 from trading_bot.strategies.indicators import calculate_hma_result, calculate_two_ema_result
+from trading_bot.strategies import signals
 from trading_bot.utils.colors import colors
 import argparse
 import traceback
@@ -8,12 +9,12 @@ from trading_bot.utils.scheduler import wait_until_targets, timeframe_to_minutes
 
 # --- Configuration ---
 DEFAULT_SYMBOL: str = "EURUSD"
-DEFAULT_HMA_PERIOD: int = 16  # Length of the Hull window
+DEFAULT_HMA_PERIOD: int = signals.EMA_HMA_HMA_PERIOD  # Length of the Hull window
 DEFAULT_QUANTITY: int = 100
 DEFAULT_DAYS = 7
-DEFAULT_LONG_PERIOD = 200
-DEFAULT_SHORT_PERIOD = 20
-DEFAULT_TIME_FRAME = "MINUTE_5"
+DEFAULT_LONG_PERIOD = signals.EMA_HMA_LONG_PERIOD
+DEFAULT_SHORT_PERIOD = signals.EMA_HMA_SHORT_PERIOD
+DEFAULT_TIME_FRAME = signals.EMA_HMA_TIME_FRAME
 
 
 def main() -> None:

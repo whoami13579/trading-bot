@@ -8,7 +8,7 @@
 | Saved report | `uv run tb-demo-roundtrip --report-only` | Reads private saved results; no network |
 | DEMO read-only | `uv run tb-demo-roundtrip --read-only`, `uv run tb-demo-readonly`, `uv run tb-trade --strategy hma --read-only` | Authenticated DEMO reads, no orders |
 | LIVE read-only | `uv run tb-live-preflight --REAL` | Authenticated LIVE preflight, no orders |
-| Historical simulation | `uv run tb-backtest --strategy hma\|donchian\|grid` | Public Dukascopy/Yahoo history or a local snapshot only; no broker access or orders |
+| Historical simulation | `uv run tb-backtest --strategy NAME` (all seven strategies) | Public Dukascopy/Yahoo history or a local snapshot only; no broker access or orders |
 | Legacy history diagnostic | `uv run test_strategy.py` | Authenticated read-only broker history, then legacy quote simulation |
 | DEMO order execution | `uv run tb-demo-roundtrip`; `uv run tb-trade --strategy NAME` without `--REAL`; `test.py` | Orders; separate authorization required during maintenance |
 | LIVE order execution | `tb-trade --strategy NAME --REAL`; `tb-demo-roundtrip --REAL`; explicit legacy LIVE execution flags below | Real-money orders subject to existing gates; never run during refactoring |

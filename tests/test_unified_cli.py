@@ -148,11 +148,8 @@ class GuardedChild:
 
 class RegistryTests(unittest.TestCase):
     def test_capability_matrix_is_exactly_the_implemented_modes(self):
-        expected = {
-            "moving-average": {DEMO, LIVE}, "sma": {DEMO, LIVE}, "hma": {DEMO, LIVE, BACKTEST},
-            "ema-hma": {DEMO, LIVE}, "multiple-hma": {DEMO, LIVE},
-            "donchian": {BACKTEST}, "grid": {BACKTEST},
-        }
+        expected = {key: {DEMO, LIVE, BACKTEST} for key in TRADABLE}
+        expected.update(donchian={BACKTEST}, grid={BACKTEST})
         self.assertEqual({k: set(s.modes) for k, s in registry.STRATEGIES.items()}, expected)
         self.assertEqual(tuple(s.key for s in registry.with_mode(DEMO)), TRADABLE)
         self.assertEqual(tuple(s.key for s in registry.with_mode(LIVE)), TRADABLE)
@@ -253,11 +250,9 @@ class TradeCliTests(unittest.TestCase):
         lines = out.splitlines()
         self.assertEqual(lines[0].split()[:4], ["Strategy", "DEMO", "LIVE", "Backtest"])
         rows = {line.split()[0]: line.split()[1:4] for line in lines[1:8]}
-        self.assertEqual(rows, {
-            "moving-average": ["yes", "yes", "no"], "sma": ["yes", "yes", "no"],
-            "hma": ["yes", "yes", "yes"], "ema-hma": ["yes", "yes", "no"],
-            "multiple-hma": ["yes", "yes", "no"], "donchian": ["no", "no", "yes"],
-            "grid": ["no", "no", "yes"]})
+        expected = {key: ["yes", "yes", "yes"] for key in TRADABLE}
+        expected.update(donchian=["no", "no", "yes"], grid=["no", "no", "yes"])
+        self.assertEqual(rows, expected)
         for argv in (["--list-strategies", "--strategy", "hma"], ["--list-strategies", "--REAL"],
                      ["--list-strategies", "--help"]):
             with self.subTest(argv=argv):
@@ -572,11 +567,15 @@ class BacktestCliTests(unittest.TestCase):
     def test_list_strategies(self):
         code, out, err = self.invoke(["--list-strategies"])
         self.assertEqual((code, err), (0, ""))
-        rows = {line.split()[0]: line.split()[1:4] for line in out.splitlines()[1:4]}
-        self.assertEqual(rows, {"hma": ["MINUTE_30", "dukascopy", "continuous"],
+        rows = {line.split()[0]: line.split()[1:4] for line in out.splitlines()[1:8]}
+        self.assertEqual(rows, {"moving-average": ["MINUTE", "dukascopy", "continuous"],
+                                "sma": ["MINUTE", "dukascopy", "continuous"],
+                                "hma": ["MINUTE_30", "dukascopy", "continuous"],
+                                "ema-hma": ["MINUTE_5", "dukascopy", "continuous"],
+                                "multiple-hma": ["MINUTE_30", "dukascopy", "continuous"],
                                 "donchian": ["HOUR", "snapshot", "research"],
                                 "grid": ["HOUR", "dukascopy", "grid"]})
-        self.assertIn("moving-average, sma, ema-hma, multiple-hma", out)
+        self.assertNotIn("No historical backtest", out)
         code, _, err = self.invoke(["--list-strategies", "--strategy", "grid"])
         self.assertEqual(code, 2)
         self.assertIn("--list-strategies takes no other arguments", err)
@@ -585,17 +584,17 @@ class BacktestCliTests(unittest.TestCase):
         args = backtest_cli.build_parser().parse_args([])
         self.assertEqual(args.strategy, "hma")
 
-    def test_repeated_or_trading_only_strategy_is_rejected_before_data_access(self):
+    def test_repeated_or_unknown_strategy_is_rejected_before_data_access(self):
         for argv in (["--strategy", "hma", "--strategy", "grid"], ["--strategy=grid", "--strategy=grid"]):
             with self.subTest(argv=argv):
                 code, _, err = self.invoke(argv)
                 self.assertEqual(code, 2)
                 self.assertIn("--strategy may be given only once", err)
-        for key in ("moving-average", "sma", "ema-hma", "multiple-hma"):
-            with self.subTest(strategy=key):
-                code, _, err = self.invoke(["--strategy", key])
-                self.assertEqual(code, 2)
-                self.assertIn(f"tb-trade --strategy {key}", err)
+        trading_only = Strategy("paper-only", "x", {DEMO}, trading_entry="trading_bot.strategies.hma:main")
+        with patch.dict(registry.STRATEGIES, {"paper-only": trading_only}):
+            code, _, err = self.invoke(["--strategy", "paper-only"])
+        self.assertEqual(code, 2)
+        self.assertIn("tb-trade --strategy paper-only", err)
         code, _, err = self.invoke(["--strategy", "nonexistent"])
         self.assertEqual(code, 2)
         self.assertIn("invalid choice", err)
@@ -645,7 +644,7 @@ class BacktestEquivalenceTests(GuardedChild, unittest.TestCase):
                     result = self.command(name, *args, forbid=self.BROKER)
                     self.assertEqual(result.returncode, 0, result.stderr)
         for args in (("--REAL",), ("--strategy", "grid", "--real"), ("--account", "a"),
-                     ("--strategy", "sma")):
+                     ("--strategy", "sma", "--cycles", "1"), ("--strategy", "nonexistent")):
             with self.subTest(args=args):
                 result = self.command("tb-backtest", *args, forbid=self.BROKER)
                 self.assertEqual(result.returncode, 2, result.stderr)
