@@ -129,8 +129,12 @@ with patch.object(TradingApi, "__init__", forbidden), patch.object(requests.sess
                         self.assertNotIn(name.split('.')[0], forbidden_modules, str(path))
 
     def test_packaging_discovers_only_src_and_has_all_console_commands(self):
-        self.assertEqual(len([entry for entry in distribution("trading-bot").entry_points
-                              if entry.group == "console_scripts"]), 13)
+        # 13 original trading-bot-* commands plus 9 preferred tb-* commands.
+        names = [entry.name for entry in distribution("trading-bot").entry_points
+                 if entry.group == "console_scripts"]
+        self.assertEqual(len(names), 22)
+        self.assertEqual(len([name for name in names if name.startswith("trading-bot-")]), 13)
+        self.assertEqual(len([name for name in names if name.startswith("tb-")]), 9)
         self.assertTrue((ROOT / "src/trading_bot/api/client.py").is_file())
 
     def test_fixed_credentials_path_ignores_working_directory(self):

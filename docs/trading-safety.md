@@ -2,30 +2,55 @@
 
 ## Automated strategy execution
 
-All six order-capable strategies share these defaults: **EURUSD, size 100, DEMO**:
-`main.py`, `sma.py`, `hma.py`, `multiple_hma.py`, `ema_hma.py`, and `test.py`.
+All order-capable strategies share these defaults: **EURUSD, size 100, DEMO**.
+The preferred command is `tb-trade`; it dispatches to the same strategy
+implementations as the original commands:
+
+| Strategy | Preferred command | Original commands |
+| --- | --- | --- |
+| Moving average | `tb-trade --strategy moving-average` | `trading-bot-moving-average`, `main.py` |
+| SMA | `tb-trade --strategy sma` | `trading-bot-sma`, `sma.py` |
+| HMA | `tb-trade --strategy hma` | `trading-bot-hma`, `hma.py` |
+| EMA/HMA | `tb-trade --strategy ema-hma` | `trading-bot-ema-hma`, `ema_hma.py` |
+| Multiple HMA | `tb-trade --strategy multiple-hma` | `trading-bot-multiple-hma`, `multiple_hma.py` |
+| Single SELL order | — (not a strategy) | `test.py` |
+
 **`test.py` submits an order; it is not an offline test.** Existing SMA, EMA, HMA,
 Multiple HMA calculations, signal rules, periods and timeframes are unchanged.
+Donchian and Grid are historical simulations only: `tb-trade --strategy donchian`
+and `tb-trade --strategy grid` are rejected in every mode before any strategy,
+credential or broker code is loaded. Use `tb-backtest` for them.
 
 ```bash
 # DEMO
-.venv/bin/python hma.py
+uv run tb-trade --strategy hma
 
 # LIVE
-.venv/bin/python hma.py --REAL
+uv run tb-trade --strategy hma --REAL
 ```
 
-The same invocation works with the other five scripts. `--real` remains an alias
-for `--REAL`. All six accept optional instrument and size overrides:
+The same invocation works with the other strategies and the original commands
+(`.venv/bin/python hma.py --REAL` remains equivalent). `--real` remains an alias
+for `--REAL`. All accept optional instrument and size overrides:
 
 ```bash
-.venv/bin/python sma.py --symbol EURUSD --size 100
-.venv/bin/python multiple_hma.py --REAL --symbol EURUSD --size 100
+uv run tb-trade --strategy sma --symbol EURUSD --size 100
+uv run tb-trade --strategy multiple-hma --REAL --symbol EURUSD --size 100
 ```
 
 These are online strategy commands and can place orders when preflight succeeds.
 `--help` exits before credentials or network access. Use the offline test runner
 for validation, not a running strategy.
+
+`tb-trade` changes nothing between the command line and the strategy. It requires
+exactly one `--strategy` and refuses unknown or backtest-only strategies,
+backtesting options, and environment spellings other than `--REAL`/`--real`.
+It then calls the strategy's existing `main()` once with the remaining arguments.
+The strategy's parser, defaults, account and instrument validation, LIVE fee
+verification, limits, stops, ownership checks, account lock, durable intent
+journal, confirmation, reconciliation, session handling, read-only retries and
+shutdown behavior apply unchanged. `tb-trade` has no broker, retry or order code.
+See the [CLI guide](cli.md).
 
 | Selection | Environment | Endpoint |
 | --- | --- | --- |

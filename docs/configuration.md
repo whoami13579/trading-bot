@@ -28,6 +28,12 @@ search, or shell-variable overrides. **Do not `source .env`**: the API key name
 contains hyphens. Missing, ambiguous, duplicate, placeholder, unexpected, or insecure
 configuration is rejected. No credential values are logged or changed.
 
+On the command line, `uv run tb-trade --strategy NAME` selects DEMO, and only an
+explicit `--REAL` or `--real` selects LIVE; `tb-trade` refuses `--live`, `--demo`
+and `--environment` rather than guessing. The legacy strategy commands use the same
+two flags. Historical backtesting (`tb-backtest`) never selects an environment and
+refuses `--REAL`, `--real` and `--account`. See the [CLI guide](cli.md).
+
 Select the endpoint in code with `TradingApi(environment="demo")` (the default)
 or explicitly `TradingApi(environment="live")`. The legacy explicit
 `real_account=True` argument remains supported; conflicting selectors are rejected.
@@ -65,7 +71,8 @@ execution. The CLI never changes an unsupported size or instrument silently.
 
 ### Network retry and recovery (HMA)
 
-`hma.py` accepts `--network-retries` (default 3), `--network-retry-delay` (2s),
+`tb-trade --strategy hma` (and the legacy `hma.py`/`trading-bot-hma`) accepts
+`--network-retries` (default 3), `--network-retry-delay` (2s),
 `--network-retry-max-delay` (30s), `--network-retry-jitter` (0.2),
 `--recovery-interval` (60s), `--max-outage` (0 = unlimited), `--max-signal-delay`
 (120s) and `--no-network-recovery`. The defaults live in

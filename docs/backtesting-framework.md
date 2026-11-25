@@ -1,16 +1,19 @@
 # Unified backtesting framework
 
-HMA and Donchian run on one historical data layer, one event loop, one Decimal
+HMA, Donchian and Grid run on one historical data layer, one event loop, one Decimal
 ledger, explicit execution/cost models, one report format and one CLI. Adding a
 strategy means writing its pure signal logic and a small adapter. Backtesting is
 simulation only: it never authenticates, reads credentials or submits orders.
 
 ```bash
-uv run trading-bot-backtest --strategy hma --symbol EURUSD --time-frame HOUR --size 100
-uv run trading-bot-backtest --strategy donchian --symbol EURUSD --time-frame HOUR --size 100
-uv run trading-bot-backtest --strategy grid --grid-lower 1.15 --grid-upper 1.19 --start 2025-09-01 --end 2025-10-01
-uv run trading-bot-backtest --strategy grid --grid-lookback 100 --start 2025-09-01 --end 2025-10-01
+uv run tb-backtest --list-strategies
+uv run tb-backtest --strategy hma --symbol EURUSD --time-frame HOUR --size 100
+uv run tb-backtest --strategy donchian --symbol EURUSD --time-frame HOUR --size 100
+uv run tb-backtest --strategy grid --grid-lower 1.15 --grid-upper 1.19 --start 2025-09-01 --end 2025-10-01
+uv run tb-backtest --strategy grid --grid-lookback 100 --start 2025-09-01 --end 2025-10-01
 ```
+
+`tb-backtest` is the preferred name; `trading-bot-backtest` is the same command.
 
 ## Problems in the previous architecture
 
@@ -106,9 +109,14 @@ the data audit accepts such gaps. A third policy, `LEGACY_OBSERVED_CLOSE`, exist
 
 ## CLI
 
-`trading-bot-backtest` (also `uv run scripts/backtest.py`, `uv run -m
-trading_bot.backtesting.cli`). `--strategy` defaults to `hma`, so earlier
-`trading-bot-backtest` invocations behave as before.
+`tb-backtest` (also `trading-bot-backtest`, `uv run scripts/backtest.py`,
+`uv run -m trading_bot.backtesting.cli`; all the same function). `--strategy`
+defaults to `hma`, so earlier `trading-bot-backtest` invocations behave as before.
+`--list-strategies` prints each backtestable strategy's default timeframe, data
+source and execution model. `--strategy` may be given once; a repeated selection,
+or a strategy without a backtest (such as `sma`, which points to `tb-trade`),
+exits 2. The command name is not part of the reproducibility record, so both
+names produce identical reports and configuration hashes.
 
 | Option | Default | Notes |
 | --- | --- | --- |
@@ -128,6 +136,7 @@ trading_bot.backtesting.cli`). `--strategy` defaults to `hma`, so earlier
 | `--ema-period`, `--grid-lower`, `--grid-upper`, `--grid-lookback`, `--grid-intervals`, `--level-size`, `--max-position` | 50, automatic, automatic, 100, 10, 100, 500 | grid only: both bounds (manual) or neither (automatic from the lookback); see [grid backtesting](grid-backtesting.md) |
 | `--cache-dir`, `--output-dir`, `--refresh-data`, `--allow-data-gaps` | as before | |
 | `--allow-holdout-overlap` | off | see research safeguards |
+| `--list-strategies` | off | print strategies and defaults, then exit |
 
 Invalid combinations (another strategy's parameter, a cost option of the other
 execution model, a refused holdout reuse, broker/account/risk/scheduling flags)
@@ -301,9 +310,15 @@ offline, with sockets, credential files and broker imports blocked:
 2. Add a `StrategyAdapter` to `backtesting/adapters.py`: parameters (flags,
    defaults), factory, description, signal price and default timeframe/data
    source/execution model.
-3. Add regression tests (pinned results, no-look-ahead, CLI defaults).
+3. Register the strategy's capabilities in `strategies/registry.py` with
+   `BACKTEST` in its modes and `backtest_adapter` set to the adapter key (an
+   offline test requires the registry and `ADAPTERS` to match). Do not add
+   `DEMO`/`LIVE` unless a reviewed trading entry point already exists. See the
+   [CLI guide](cli.md#adding-a-strategy).
+4. Add regression tests (pinned results, no-look-ahead, CLI defaults).
 
-Data, execution, costs, reports, safeguards and CLI options come for free.
+Data, execution, costs, reports, safeguards and CLI options come for free; no
+wrapper script or console-script entry is needed.
 
 Strategies that manage many orders rather than one target position (the fixed
 grid) declare `execution="grid"` in their adapter and run on `GridExecution`

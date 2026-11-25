@@ -41,7 +41,7 @@ cd /home/chu/code/trading-bot
 export UV_CACHE_DIR=/tmp/trading-bot-uv-cache
 uv sync --frozen --offline --check
 uv pip check --python .venv/bin/python
-.venv/bin/python scripts/check_environment.py
+uv run --locked tb-check-environment     # same as: .venv/bin/python scripts/check_environment.py
 ```
 
 The checker verifies Python 3.12 and all seven locked package versions, compiles
@@ -54,15 +54,22 @@ sleep blocked. The checker inspects `main.py` and `test.py` statically and exerc
 You can also inspect the supported CLIs individually without starting a loop:
 
 ```bash
-uv run --offline --no-sync hma.py --help
-uv run --offline --no-sync multiple_hma.py --help
-uv run --offline --no-sync ema_hma.py --help
-uv run --offline --no-sync ping_service.py --help
+uv run --offline --no-sync tb-trade --help
+uv run --offline --no-sync tb-trade --list-strategies
+uv run --offline --no-sync tb-trade --strategy hma --help
+uv run --offline --no-sync tb-trade --strategy multiple-hma --help
+uv run --offline --no-sync tb-trade --strategy ema-hma --help
+uv run --offline --no-sync tb-backtest --list-strategies
+uv run --offline --no-sync tb-ping --help
 ```
 
+The legacy forms (`hma.py --help`, `multiple_hma.py --help`, `ema_hma.py --help`,
+`ping_service.py --help`, `trading-bot-hma --help`, …) print the same options.
 `uv --offline` prevents uv from downloading packages; it does **not** prevent a
 Python program from accessing the network. These help commands are safe because
-argument parsing exits on `--help` before configuration or API construction.
+argument parsing exits on `--help` before configuration or API construction;
+`tb-trade --help` and `--list-strategies` do not even import a strategy module.
+See the [CLI guide](cli.md) for every command.
 Use the checker above for validation with network access blocked in Python.
 
 
@@ -70,9 +77,11 @@ Use the checker above for validation with network access blocked in Python.
 
 The project now requires Python >=3.12; `.python-version` selects 3.12. Run
 `uv sync --locked` after updating the checkout to install the src package and its
-console commands. `uv run --locked scripts/check_offline.py` runs unittest discovery
-under socket, HTTP and credential-loading guards. The old `scripts/test_offline.py`
-command is an alias. `uv build` produces an sdist and wheel; the wheel includes
+console commands: the preferred `tb-*` commands and the original `trading-bot-*`
+commands. `uv run --locked tb-check-offline` (equivalently
+`uv run --locked scripts/check_offline.py`) runs unittest discovery under socket,
+HTTP and credential-loading guards. The old `scripts/test_offline.py` command is
+an alias. `uv build` produces an sdist and wheel; the wheel includes
 only the package and metadata. The sdist also includes public checkout tools,
 tests, fixtures and documentation, never `.env` or integration journals.
 
