@@ -626,12 +626,15 @@ class BacktestEquivalenceTests(GuardedChild, unittest.TestCase):
     def compare(self, *args):
         reports, outputs = [], []
         for name in ("trading-bot-backtest", "tb-backtest"):
-            result = self.command(name, *args, "--output-dir", f"out-{name}", forbid=self.BROKER)
+            # A fresh directory per run: glob order is filesystem-dependent.
+            output = self.tmp / "work" / f"out-{len(list((self.tmp / 'work').glob('out-*')))}"
+            result = self.command(name, *args, "--output-dir", str(output), forbid=self.BROKER)
             self.assertEqual(result.returncode, 0, result.stderr)
             outputs.append([line for line in result.stdout.splitlines()
                             if not line.startswith("Results:")])
-            reports.append(json.loads(next((self.tmp / "work" / f"out-{name}").glob("*/report.json"))
-                                      .read_text()))
+            found = list(output.glob("*/report.json"))
+            self.assertEqual(len(found), 1, found)
+            reports.append(json.loads(found[0].read_text()))
         self.assertEqual(outputs[0], outputs[1])
         self.assertEqual(reports[0], reports[1])  # Including the reproducibility hashes.
         self.assertEqual(len(reports[0]["reproducibility"]["configuration_sha256"]), 64)
