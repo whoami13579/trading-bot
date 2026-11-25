@@ -23,12 +23,17 @@ DEFAULT_DAYS = 7
 DEFAULT_DIRECTION = "BUY"
 
 
-def main() -> None:
+def main(*, simulation_help: bool = True) -> None:
+    """``hma.py``/``trading-bot-hma``: DEMO/LIVE trading, or ``--backtest``.
+
+    ``simulation_help=False`` only hides the ``--backtest`` options from --help;
+    parsing and behavior are unchanged.
+    """
     parser = argparse.ArgumentParser(allow_abbrev=False)
     add_trading_arguments(parser)
     from trading_bot.backtesting.cli import SIMULATION_OPTIONS, add_arguments, execute
     from trading_bot.backtesting.timeframes import MINUTES
-    add_arguments(parser)
+    add_arguments(parser, hidden=not simulation_help)
     parser.add_argument("--hma_period", "--hma-period", type=int)
     parser.add_argument("--time_frame", "--time-frame", choices=MINUTES)
     parser.add_argument("--schedule-time-frame", choices=SCHEDULE_TIMEFRAMES,
@@ -138,6 +143,12 @@ def main() -> None:
         # Every exit, including normal --cycles completion and any stop: acknowledged
         # orders still awaiting confirmation must be reconciled before a restart.
         warn_unconfirmed(pending)
+
+
+def trade() -> None:
+    """``tb-trade --strategy hma``: the same command, without advertising the
+    ``--backtest`` options that tb-trade refuses (use tb-backtest instead)."""
+    return main(simulation_help=False)
 
 
 def _report_shutdown(api):

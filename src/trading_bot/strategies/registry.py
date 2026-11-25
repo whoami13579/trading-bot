@@ -40,6 +40,10 @@ class Strategy:
     backtest_adapter: str | None = None
     # Pre-existing commands that run the same implementation.
     legacy_commands: tuple = ()
+    # Options of the online command, beyond --symbol/--size, that tb-backtest also
+    # defines with the same meaning. tb-trade refuses every other tb-backtest option
+    # for this strategy. Offline tests check this against the strategy's parser.
+    trading_options: frozenset = frozenset()
 
     def __post_init__(self):
         modes = frozenset(self.modes)
@@ -52,6 +56,9 @@ class Strategy:
             raise ValueError(f"{self.key}: LIVE support requires DEMO support")
         if (BACKTEST in modes) != (self.backtest_adapter is not None):
             raise ValueError(f"{self.key}: backtest mode requires a backtest adapter")
+        object.__setattr__(self, "trading_options", frozenset(self.trading_options))
+        if self.trading_options and self.trading_entry is None:
+            raise ValueError(f"{self.key}: trading options require a trading entry point")
         if self.trading_entry is not None:
             module, _, function = self.trading_entry.partition(":")
             if not module.startswith(_ENTRY_PACKAGE) or not function.isidentifier():
@@ -95,9 +102,12 @@ STRATEGIES = {
             "hma",
             "Hull moving average, configured side / flat",
             frozenset((DEMO, LIVE, BACKTEST)),
-            trading_entry="trading_bot.strategies.hma:main",
+            # hma.trade runs hma.main without advertising its --backtest options.
+            trading_entry="trading_bot.strategies.hma:trade",
             backtest_adapter="hma",
             legacy_commands=("trading-bot-hma", "hma.py", "hma.py --backtest"),
+            trading_options=frozenset(("--hma-period", "--hma_period", "--direction",
+                                       "--time-frame", "--time_frame")),
         ),
         Strategy(
             "ema-hma",
@@ -106,6 +116,8 @@ STRATEGIES = {
             trading_entry="trading_bot.strategies.ema_hma:main",
             backtest_adapter="ema-hma",
             legacy_commands=("trading-bot-ema-hma", "ema_hma.py"),
+            trading_options=frozenset(("--long_period", "--short_period", "--hma_period",
+                                       "--time_frame")),
         ),
         Strategy(
             "multiple-hma",
@@ -114,6 +126,7 @@ STRATEGIES = {
             trading_entry="trading_bot.strategies.multiple_hma:main",
             backtest_adapter="multiple-hma",
             legacy_commands=("trading-bot-multiple-hma", "multiple_hma.py"),
+            trading_options=frozenset(("--hma_period", "--long_term")),
         ),
         Strategy(
             "donchian",

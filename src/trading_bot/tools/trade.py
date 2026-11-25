@@ -12,6 +12,7 @@ before any strategy module is imported.
 
 import argparse
 import sys
+import textwrap
 
 from trading_bot.strategies import registry
 
@@ -20,10 +21,11 @@ _LIVE_FLAGS = frozenset(("--REAL", "--real"))
 # Plausible environment spellings that strategies do not define. They are refused
 # with a clear message instead of reaching a strategy parser as unknown options.
 _ENVIRONMENT_SELECTORS = frozenset(("--environment", "--demo", "--DEMO", "--live", "--LIVE"))
-# Options both commands define with the same meaning for an order-capable strategy.
-_SHARED_WITH_BACKTEST = frozenset(
-    ("-h", "--help", "--strategy", "--list-strategies", "--symbol", "--size",
-     "--time-frame", "--time_frame")
+# Options that tb-backtest also defines and every order-capable strategy accepts
+# with the same meaning (add_trading_arguments). Strategy-specific overlaps are
+# declared per strategy in the registry (Strategy.trading_options).
+_COMMON_WITH_BACKTEST = frozenset(
+    ("-h", "--help", "--strategy", "--list-strategies", "--symbol", "--size")
 )
 
 EXAMPLES = """\
@@ -36,8 +38,8 @@ examples:
   tb-trade --strategy hma --REAL                       # LIVE, real money, guarded
 
 Every strategy run without --read-only is order-capable. DEMO is the default;
-LIVE requires --REAL or --real and passes the existing LIVE preflight.
-Historical simulations (hma, donchian, grid) use: tb-backtest --strategy NAME
+LIVE requires --REAL or --real and passes the existing LIVE preflight. Safety
+controls differ between strategies: see docs/trading-safety.md.
 """
 
 
@@ -47,7 +49,10 @@ def build_parser():
         prog=PROG,
         usage="%(prog)s --strategy STRATEGY [--REAL | --real] [strategy options]",
         description=__doc__.split("\n\n", 1)[0].replace("``", ""),
-        epilog=f"strategies:\n{registry.capability_table()}\n\n{EXAMPLES}",
+        epilog=(f"strategies:\n{registry.capability_table()}\n\n{EXAMPLES}" + textwrap.fill(
+            "Historical simulations of "
+            + ", ".join(s.key for s in registry.with_mode(registry.BACKTEST))
+            + " use: tb-backtest --strategy NAME", width=80) + "\n"),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,
         allow_abbrev=False,
@@ -88,18 +93,16 @@ def _select(parser, key, live):
     return strategy
 
 
-def _backtest_only_options():
-    """Options of the backtest command that mean nothing to an order-capable strategy."""
-    from trading_bot.backtesting.adapters import ADAPTERS
-    from trading_bot.backtesting.cli import build_parser as backtest_parser
+def backtest_only_options(strategy):
+    """tb-backtest options that the selected strategy's trading command does not accept.
 
-    shared = set(_SHARED_WITH_BACKTEST)
-    for strategy in registry.with_mode(registry.DEMO):
-        if strategy.backtest_adapter:  # e.g. --hma-period/--direction for hma
-            shared.update(flag for parameter in ADAPTERS[strategy.backtest_adapter].parameters
-                          for flag in parameter.flags)
-    options = {option for action in backtest_parser()._actions for option in action.option_strings}
-    return options - shared
+    This includes simulation options, research options and parameters of other
+    strategies. Options the strategy's own online parser accepts with the same
+    meaning (``Strategy.trading_options``) pass through to that parser.
+    """
+    from trading_bot.backtesting.cli import option_names
+
+    return option_names() - _COMMON_WITH_BACKTEST - strategy.trading_options
 
 
 def _reject_foreign_options(parser, strategy, forwarded):
@@ -109,10 +112,15 @@ def _reject_foreign_options(parser, strategy, forwarded):
         parser.error(f"{', '.join(environment)}: not a tb-trade option; DEMO is the default "
                      "and LIVE is selected only with --REAL or --real")
     if names:
-        backtest = sorted(names & _backtest_only_options())
+        backtest = sorted(names & backtest_only_options(strategy))
         if backtest:
+            # The online parsers of some strategies spell an option with "_" only.
+            hints = [f"{name} -> {name[:2] + name[2:].replace('-', '_')}" for name in backtest
+                     if name[:2] + name[2:].replace("-", "_") in strategy.trading_options]
+            hint = f" (trading spelling: {', '.join(hints)})" if hints else ""
             parser.error(f"{', '.join(backtest)}: historical backtesting options are not "
-                         f"accepted by tb-trade; use: tb-backtest --strategy {strategy.key}"
+                         f"accepted by tb-trade --strategy {strategy.key}{hint}; use: "
+                         f"tb-backtest --strategy {strategy.key}"
                          if strategy.supports(registry.BACKTEST) else
                          f"{', '.join(backtest)}: historical backtesting options are not "
                          f"accepted by tb-trade, and {strategy.key!r} has no backtest")

@@ -167,9 +167,15 @@ class RegistryTests(unittest.TestCase):
         for key in TRADABLE:
             strategy = registry.get(key)
             with self.subTest(strategy=key):
-                self.assertEqual(scripts[f"trading-bot-{key}"].value, strategy.trading_entry)
                 module = importlib.import_module(f"trading_bot.strategies.{MODULES[key]}")
-                self.assertIs(strategy.load_trading_entry(), module.main)
+                if key == "hma":  # hma.trade = hma.main with --backtest help hidden.
+                    self.assertEqual(strategy.trading_entry, "trading_bot.strategies.hma:trade")
+                    self.assertIs(strategy.load_trading_entry(), module.trade)
+                else:
+                    self.assertEqual(scripts[f"trading-bot-{key}"].value, strategy.trading_entry)
+                    self.assertIs(strategy.load_trading_entry(), module.main)
+                self.assertEqual(scripts[f"trading-bot-{key}"].value,
+                                 f"trading_bot.strategies.{MODULES[key]}:main")
                 self.assertIn(f"trading-bot-{key}", strategy.legacy_commands)
         legacy_strategy_scripts = {n for n, e in scripts.items()
                                    if e.value.startswith("trading_bot.strategies.")}
@@ -404,8 +410,8 @@ class ForwardingEquivalenceTests(unittest.TestCase):
     def test_strategy_parsers_still_validate_and_reject_unknown_arguments(self):
         bad = {"hma": (["--time-frame", "HOUR"], ["--cycles", "0"], ["--read-only", "--REAL"],
                        ["--size", "0"], ["--bogus"], ["--RE"], ["--REAL=1"], ["extra"]),
-               "sma": (["--size", "nan"], ["--hma-period", "5"], ["--rea"]),
-               "ema-hma": (["--long_period", "x"], ["--long-period", "5"]),
+               "sma": (["--size", "nan"], ["--rea"], ["--fast_period", "5"]),
+               "ema-hma": (["--long_period", "x"], ["--long-period-x", "5"]),
                "multiple-hma": (["--days", "x"],), "moving-average": (["--max-orders", "x"],)}
         for key, cases in bad.items():
             module = importlib.import_module(f"trading_bot.strategies.{MODULES[key]}")
@@ -429,7 +435,17 @@ class ForwardingEquivalenceTests(unittest.TestCase):
                 self.assertEqual(code, 0)
                 self.assertTrue(out.startswith(f"usage: tb-trade --strategy {key} "))
                 options = lambda text: text[text.index("\noptions:"):]
-                self.assertEqual(options(out), options(legacy.getvalue()))
+                if key != "hma":
+                    self.assertEqual(options(out), options(legacy.getvalue()))
+                    continue
+                # tb-trade refuses HMA's --backtest options, so its help omits exactly them.
+                from trading_bot.backtesting.cli import SIMULATION_OPTIONS
+                hidden = {"--backtest", *SIMULATION_OPTIONS}
+                for option in hidden:
+                    self.assertIn(option, legacy.getvalue())
+                    self.assertNotIn(option, out)
+                for line in options(out).splitlines():
+                    self.assertIn(line, options(legacy.getvalue()))
 
 
 class SafetyGateTests(unittest.TestCase):
@@ -483,11 +499,19 @@ class SafetyGateTests(unittest.TestCase):
             api.assert_not_called()
 
     def test_tb_trade_runs_the_identical_strategy_function(self):
-        # The same function object as trading-bot-<key>, so the existing network
-        # recovery, uncertain-order, journal and shutdown tests cover tb-trade too.
+        # The same function object as trading-bot-<key> (hma: its main through
+        # hma.trade), so the existing network recovery, uncertain-order, journal and
+        # shutdown tests cover tb-trade too.
         scripts = console_scripts()
         for key in TRADABLE:
             with self.subTest(strategy=key):
+                if key == "hma":
+                    from trading_bot.strategies import hma
+                    with patch.object(hma, "main", return_value=None) as main:
+                        registry.get(key).load_trading_entry()()
+                    main.assert_called_once_with(simulation_help=False)
+                    self.assertIs(scripts["trading-bot-hma"].load(), hma.main)
+                    continue
                 self.assertIs(registry.get(key).load_trading_entry(),
                               scripts[f"trading-bot-{key}"].load())
 

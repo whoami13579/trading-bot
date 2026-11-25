@@ -29,7 +29,17 @@ mode.
 command needs credentials or network access.
 
 Donchian and Grid are historical simulations only. `tb-trade` rejects them in
-every mode, before importing any strategy or broker code.
+every mode, before importing any strategy or broker code. DEMO and guarded LIVE
+trading for them is planned, not implemented: Donchian in #12, Grid in #13. A
+mode becomes available only when it is implemented, tested and validated on DEMO,
+never through a registry flag alone.
+
+A backtest reproduces each strategy's **signal rule**, not necessarily its online
+candle timing, order execution or LIVE limits. Every backtest report of an
+order-capable strategy lists the differences (`online_differences`); details are in
+[strategy backtesting](strategy-backtesting.md#what-equivalent-means-here). Online
+safety controls also differ between strategies
+([comparison](trading-safety.md#safety-capabilities-by-strategy)).
 
 ## Command reference
 
@@ -91,9 +101,14 @@ Rules:
   authentication, account verification, LIVE preflight, risk limits, journals,
   confirmation, reconciliation, network recovery and shutdown code as the
   legacy command. It has no broker code of its own.
-- Backtesting options (`--backtest`, `--start`, `--data-source`, `--snapshot`,
-  `--execution-model`, grid or Donchian parameters, …) are refused with a pointer
-  to `tb-backtest`.
+- tb-backtest options that the selected strategy's trading command does not accept
+  are refused with a pointer to `tb-backtest`, before any strategy is loaded. That
+  covers simulation and research options (`--backtest`, `--start`, `--data-source`,
+  `--snapshot`, `--execution-model`, …) and parameters of other strategies (for
+  example `--hma-period` for sma). When only the spelling differs, the message names
+  the trading spelling: ema-hma trades with `--long_period`, not `--long-period`.
+- `tb-trade --strategy hma --help` omits `hma.py`'s `--backtest` options, which
+  tb-trade refuses; `trading-bot-hma --help` and `hma.py --help` still list them.
 - Exit status is the strategy's own: argparse errors exit with 2, and strategies
   keep their documented stop codes.
 
@@ -112,6 +127,21 @@ Rules:
 
 The LIVE contract mapping remains **EURUSD, size 100, USD accounts**. See
 [configuration](configuration.md) and [trading safety](trading-safety.md).
+
+#### Option categories
+
+| Category | Examples | `tb-trade` | `tb-backtest` |
+| --- | --- | --- | --- |
+| Command options | `--strategy`, `--list-strategies`, `--help` | own | own |
+| Shared by both commands, every strategy | `--symbol`, `--size` (grid: `--level-size`) | forwarded | yes |
+| Trading only | `--REAL`/`--real`, `--account`, LIVE limits, `--fee-profile`, hma `--read-only`, `--cycles`, network options, `--days` | forwarded to the strategy's parser | refused (exit 2) |
+| Backtesting only | `--start`, `--end`, `--data-source`, `--initial-balance`, cost options, `--execution-model`, `--snapshot`, `--average-period`, `--fast-period`, … | refused (exit 2) | yes |
+| Strategy-specific, in both commands | hma `--hma-period`/`--hma_period`, `--direction`, `--time-frame`/`--time_frame`; ema-hma `--long_period`, `--short_period`, `--hma_period`, `--time_frame`; multiple-hma `--hma_period`, `--long_term` | forwarded for that strategy only | for that strategy only |
+
+The overlap for each strategy is declared once, in the registry
+(`Strategy.trading_options`). An offline test checks every declaration against
+the strategy's real parser: each declared option must be accepted, and every other
+tb-backtest option must be rejected by that parser or refused by tb-trade.
 
 #### Strategy-specific options
 
@@ -227,6 +257,12 @@ strategies/<name>.py main()  ──►  config/trading_config.create_trading_api
   implementations and does not copy them. Offline tests fail if the registry's
   backtest set differs from `ADAPTERS`, or if a trading entry differs from the
   matching `trading-bot-<name>` console script.
+- **Option overlap.** `tb-backtest` options come from its parser
+  (`backtesting.cli.option_names()`, from the public `Action.option_strings`).
+  Each strategy's overlap with its trading parser is `Strategy.trading_options`.
+  `tb-trade` refuses `option_names() - {--symbol, --size, ...} - trading_options`.
+- **Report warnings.** Each backtest adapter declares `online_differences`, which
+  every report shows.
 - **Mode gate.** `tb-trade` checks the requested mode (`demo`, or `live` with
   `--REAL`/`--real`) against the registry before dispatch. Registering a strategy
   does not grant it a mode.
@@ -239,7 +275,8 @@ strategies/<name>.py main()  ──►  config/trading_config.create_trading_api
    through `create_trading_api` and use the existing risk controls. For
    backtesting, provide a pure strategy class.
 2. Add one `Strategy(...)` entry to `STRATEGIES` in `registry.py`. List only the
-   modes that already work. Use `{DEMO}` alone until LIVE is reviewed, because
+   modes that already work. Declare in `trading_options` the trading options that
+   tb-backtest also defines with the same meaning. Use `{DEMO}` alone until LIVE is reviewed, because
    `tb-trade` then refuses `--REAL` for it.
 3. For backtesting, put the signal rule in a broker-free module
    (`strategies/indicators.py` or `strategies/signals.py`) and call it from both
@@ -247,8 +284,10 @@ strategies/<name>.py main()  ──►  config/trading_config.create_trading_api
    add a `StrategyAdapter` to `ADAPTERS` in `backtesting/adapters.py`, using the
    same key. `tb-backtest` picks it up automatically, including options it shares
    with other strategies (see [the framework guide](backtesting-framework.md)).
-4. Add offline tests and update the capability matrix in this document and the
-   README. The registry tests show which expectations to extend.
+4. Declare the adapter's `online_differences`: every way its online candles,
+   orders or limits differ from the simulation. Add offline tests, update the
+   capability matrix in this document and the README, and add the strategy to the
+   [safety comparison](trading-safety.md#safety-capabilities-by-strategy). The registry tests show which expectations to extend.
 
 No executable wrapper, root-level script or new console-script entry is needed.
 The strategy is available as `tb-trade --strategy NAME` and/or

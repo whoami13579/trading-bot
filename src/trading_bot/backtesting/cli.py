@@ -81,6 +81,28 @@ FORBIDDEN = frozenset(
 )
 
 
+class _Recorder:
+    """Forwards add_argument calls and keeps the returned (public) Action objects.
+
+    ``hidden`` adds the options with help suppressed: they parse exactly as before
+    but are not advertised (HMA's simulation options under tb-trade).
+    """
+
+    def __init__(self, target, actions, *, hidden=False):
+        self.target, self.actions, self.hidden = target, actions, hidden
+
+    def add_argument(self, *args, **kwargs):
+        if self.hidden:
+            kwargs["help"] = argparse.SUPPRESS
+        action = self.target.add_argument(*args, **kwargs)
+        self.actions.append(action)
+        return action
+
+    def add_argument_group(self, *args, **kwargs):
+        return _Recorder(self.target.add_argument_group(*args, **kwargs), self.actions,
+                         hidden=self.hidden)
+
+
 def _common_arguments(parser, *, sources, source_default, lookback_default):
     parser.add_argument("--data-source", choices=sources, default=source_default)
     parser.add_argument("--lookback-days", type=int, default=lookback_default)
@@ -127,8 +149,12 @@ def _common_arguments(parser, *, sources, source_default, lookback_default):
     )
 
 
-def add_arguments(parser):
-    """Simulation options added to the HMA strategy command (hma.py --backtest)."""
+def add_arguments(parser, *, hidden=False):
+    """Simulation options added to the HMA strategy command (hma.py --backtest).
+
+    ``hidden`` keeps them parseable but out of --help (tb-trade refuses them).
+    """
+    parser = _Recorder(parser, [], hidden=hidden)
     parser.add_argument(
         "--backtest",
         action="store_true",
@@ -214,12 +240,14 @@ def build_parser():
         f"{a.key}: {a.time_frame}, {a.data_source} data, {a.execution} execution"
         for a in ADAPTERS.values()
     )
+    actions = []
     parser = argparse.ArgumentParser(
         description=__doc__,
         epilog=f"Strategy defaults — {strategies}.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         allow_abbrev=False,
     )
+    root, parser = parser, _Recorder(parser, actions)
     parser.add_argument(
         "--backtest",
         action="store_true",
@@ -292,7 +320,14 @@ def build_parser():
             *parameter.flags, dest=dest, type=parameter.type, choices=parameter.choices,
             default=None, help=help_text,
         )
-    return parser
+    root.defined_options = frozenset(
+        {"-h", "--help"} | {option for action in actions for option in action.option_strings})
+    return root
+
+
+def option_names():
+    """Every option string the unified backtest command defines."""
+    return build_parser().defined_options
 
 
 def strategy_parameters():
