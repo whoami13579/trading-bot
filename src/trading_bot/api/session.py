@@ -170,6 +170,8 @@ class SessionAPI:
             client._stop("session_identity_changed")  # Never switch accounts back.
         client.pin_session_identity(account)
         client.configure_read_retries(self._read_retry_policy)
+        if getattr(self, "_mutations_forbidden", False):
+            client.forbid_mutations()  # A read-only run stays read-only after recovery.
         return client
 
     def getCstAndXSecurityToken(self) -> tuple[str, str] | None:

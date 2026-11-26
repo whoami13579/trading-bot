@@ -276,8 +276,11 @@ class PendingOrders:
     """
 
     def __init__(self, symbol, *, enabled=True, timeout=300.0, poll_interval=10.0,
-                 monotonic=None, sleep=None):
+                 monotonic=None, sleep=None, on_reconciled=None):
         self.symbol = symbol
+        # Called with each entry once confirmed and reflected; an open entry then carries
+        # the broker's ``opened_deal_id``. Used to record position ownership.
+        self.on_reconciled = on_reconciled
         self.enabled = enabled
         self.timeout = bounded_seconds(timeout, "order_confirmation_timeout", minimum=1.0, maximum=86400.0)
         self.poll_interval = bounded_seconds(
@@ -369,10 +372,13 @@ class PendingOrders:
         rows = positions[0]
         if entry["operation"] == "open":
             deal_id = self._opened_deal(confirmation, entry)
-            return any(
+            listed = any(
                 row["position"]["dealId"] == deal_id and row["market"]["epic"] == self.symbol
                 for row in rows
             )
+            if listed:
+                entry["opened_deal_id"] = deal_id
+            return listed
         return not any(row["position"]["dealId"] == entry["deal_id"] for row in rows)
 
     def deadline(self):
@@ -411,6 +417,8 @@ class PendingOrders:
                     _LOGGER.info(
                         "Order confirmed operation=%s; broker positions reflect it", entry["operation"]
                     )
+                    if self.on_reconciled is not None:
+                        self.on_reconciled(entry)
                 else:
                     remaining.append(entry)
         self.entries = remaining
