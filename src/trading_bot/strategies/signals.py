@@ -51,6 +51,11 @@ def sma_side(prices: list, fast_period: int, slow_period: int) -> str | None:
     return price_side(calculate_sma(prices, fast_period), calculate_sma(prices, slow_period))
 
 
+def configured_side_target(signal: str | None, direction: str) -> str | None:
+    """hma: the configured side while the signal agrees with it, otherwise flat (None)."""
+    return direction if signal == direction else None
+
+
 def reversal_target(side: str | None, position: str | None) -> str | None:
     """moving-average and sma: a side signal moves to that side; no signal holds.
 
