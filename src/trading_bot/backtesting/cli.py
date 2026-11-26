@@ -1,11 +1,14 @@
 """Unified historical-only backtest CLI. Never imports or constructs a broker API.
 
-    uv run trading-bot-backtest --strategy hma --symbol EURUSD --time-frame HOUR --size 100
-    uv run trading-bot-backtest --strategy donchian --symbol EURUSD --time-frame HOUR --size 100
-    uv run trading-bot-backtest --strategy grid --grid-lower 1.15 --grid-upper 1.19 \
+    uv run tb-backtest --list-strategies
+    uv run tb-backtest --strategy hma --symbol EURUSD --time-frame HOUR --size 100
+    uv run tb-backtest --strategy donchian --symbol EURUSD --time-frame HOUR --size 100
+    uv run tb-backtest --strategy grid --grid-lower 1.15 --grid-upper 1.19 \
         --start 2025-09-01 --end 2025-10-01
-    uv run trading-bot-backtest --strategy grid --grid-lookback 100 \
+    uv run tb-backtest --strategy grid --grid-lookback 100 \
         --start 2025-09-01 --end 2025-10-01    # automatic bounds
+
+trading-bot-backtest is the same command under its original name.
 
 Every strategy shares the data sources, engine, cost models and report. Omitted
 options use the selected strategy's preserved defaults (see --help).
@@ -30,6 +33,7 @@ from .runner import (
 )
 from .study_engine import COSTS
 from .timeframes import MINUTES
+from trading_bot.strategies import registry
 
 
 def number(value):
@@ -75,6 +79,28 @@ FORBIDDEN = frozenset(
         "--fee-profile",
     }
 )
+
+
+class _Recorder:
+    """Forwards add_argument calls and keeps the returned (public) Action objects.
+
+    ``hidden`` adds the options with help suppressed: they parse exactly as before
+    but are not advertised (HMA's simulation options under tb-trade).
+    """
+
+    def __init__(self, target, actions, *, hidden=False):
+        self.target, self.actions, self.hidden = target, actions, hidden
+
+    def add_argument(self, *args, **kwargs):
+        if self.hidden:
+            kwargs["help"] = argparse.SUPPRESS
+        action = self.target.add_argument(*args, **kwargs)
+        self.actions.append(action)
+        return action
+
+    def add_argument_group(self, *args, **kwargs):
+        return _Recorder(self.target.add_argument_group(*args, **kwargs), self.actions,
+                         hidden=self.hidden)
 
 
 def _common_arguments(parser, *, sources, source_default, lookback_default):
@@ -123,8 +149,12 @@ def _common_arguments(parser, *, sources, source_default, lookback_default):
     )
 
 
-def add_arguments(parser):
-    """Simulation options added to the HMA strategy command (hma.py --backtest)."""
+def add_arguments(parser, *, hidden=False):
+    """Simulation options added to the HMA strategy command (hma.py --backtest).
+
+    ``hidden`` keeps them parseable but out of --help (tb-trade refuses them).
+    """
+    parser = _Recorder(parser, [], hidden=hidden)
     parser.add_argument(
         "--backtest",
         action="store_true",
@@ -157,7 +187,8 @@ def reject_broker_options(args, parser, argv):
         or any(arg.split("=", 1)[0] in FORBIDDEN for arg in argv)
     ):
         parser.error(
-            "Backtesting cannot be combined with broker account/risk, scheduling or live-read-only options"
+            "Backtesting cannot be combined with broker account/risk, scheduling or "
+            "live-read-only options; DEMO/LIVE trading uses tb-trade"
         )
 
 
@@ -209,18 +240,25 @@ def build_parser():
         f"{a.key}: {a.time_frame}, {a.data_source} data, {a.execution} execution"
         for a in ADAPTERS.values()
     )
+    actions = []
     parser = argparse.ArgumentParser(
         description=__doc__,
         epilog=f"Strategy defaults — {strategies}.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         allow_abbrev=False,
     )
+    root, parser = parser, _Recorder(parser, actions)
     parser.add_argument(
         "--backtest",
         action="store_true",
         help="Accepted for compatibility; this command only runs historical simulations",
     )
     parser.add_argument("--strategy", choices=tuple(ADAPTERS), default="hma")
+    parser.add_argument(
+        "--list-strategies",
+        action="store_true",
+        help="List backtestable strategies and their defaults, then exit",
+    )
     parser.add_argument("--symbol", default="EURUSD")
     parser.add_argument(
         "--size",
@@ -263,27 +301,69 @@ def build_parser():
         action="store_true",
         help="Acknowledge evaluating non-preregistered parameters on a frozen holdout",
     )
+    shared, groups = None, {}
+    for dest, (parameter, owners) in strategy_parameters().items():
+        if len(owners) > 1:
+            shared = shared or parser.add_argument_group(
+                "parameters shared by several strategies (default depends on --strategy)")
+            group = shared
+            label = parameter.help.rsplit(" (default", 1)[0]
+            defaults = ", ".join(f"{a.key} {_shown(a, dest)}" for a in owners)
+            help_text = f"{label}; defaults: {defaults}"
+        else:
+            key = owners[0].key
+            if key not in groups:
+                groups[key] = parser.add_argument_group(f"{key} parameters")
+            group = groups[key]
+            help_text = parameter.help
+        group.add_argument(
+            *parameter.flags, dest=dest, type=parameter.type, choices=parameter.choices,
+            default=None, help=help_text,
+        )
+    root.defined_options = frozenset(
+        {"-h", "--help"} | {option for action in actions for option in action.option_strings})
+    return root
+
+
+def option_names():
+    """Every option string the unified backtest command defines."""
+    return build_parser().defined_options
+
+
+def strategy_parameters():
+    """Each strategy option once: dest -> (parameter, adapters declaring it).
+
+    Adapters that share an option must declare it identically (flags, type and
+    choices); only the default may differ.
+    """
+    found = {}
     for adapter in ADAPTERS.values():
-        group = parser.add_argument_group(f"{adapter.key} parameters")
         for p in adapter.parameters:
-            group.add_argument(
-                *p.flags, dest=p.dest, type=p.type, choices=p.choices, default=None,
-                help=p.help,
-            )
-    return parser
+            if p.dest in found:
+                first = found[p.dest][0]
+                if (first.flags, first.type, first.choices) != (p.flags, p.type, p.choices):
+                    raise ValueError(f"Inconsistent shared strategy option {p.flags[0]}")
+                found[p.dest][1].append(adapter)
+            else:
+                found[p.dest] = (p, [adapter])
+    return found
+
+
+def _shown(adapter, dest):
+    return next(p.default for p in adapter.parameters if p.dest == dest)
 
 
 def request_from_args(args):
     adapter = ADAPTERS[args.strategy]
     parameters = {}
-    for other in ADAPTERS.values():
-        for p in other.parameters:
-            value = getattr(args, p.dest)
-            if value is None:
-                continue
-            if other is not adapter:
-                raise PlanError(f"{p.flags[0]} applies only to --strategy {other.key}")
-            parameters[p.dest] = value
+    for dest, (p, owners) in strategy_parameters().items():
+        value = getattr(args, dest)
+        if value is None:
+            continue
+        if adapter not in owners:
+            keys = ", ".join(owner.key for owner in owners)
+            raise PlanError(f"{p.flags[0]} applies only to --strategy {keys}")
+        parameters[dest] = value
     return BacktestRequest(
         strategy=args.strategy,
         parameters=parameters,
@@ -309,10 +389,56 @@ def request_from_args(args):
     )
 
 
+def listing():
+    width = max(len(key) for key in ADAPTERS)
+    names = {s.backtest_adapter: s.name for s in registry.with_mode(registry.BACKTEST)}
+    rows = [f"{'Strategy':<{width}}  Time frame  Data source  Execution   Description"]
+    for adapter in ADAPTERS.values():
+        name = names[adapter.key]
+        rows.append(f"{adapter.key:<{width}}  {adapter.time_frame:<10}  "
+                    f"{adapter.data_source:<11}  {adapter.execution:<10}  {name}")
+    trading_only = [s.key for s in registry.STRATEGIES.values()
+                    if s.tradable and not s.supports(registry.BACKTEST)]
+    rows += ["", "Defaults shown are used when --time-frame, --data-source or "
+             "--execution-model is omitted; the default strategy is hma.",
+             "Strategy parameters and their defaults: tb-backtest --help"]
+    if trading_only:
+        rows.append(f"No historical backtest (DEMO/LIVE trading via tb-trade): "
+                    f"{', '.join(trading_only)}")
+    return "\n".join(rows)
+
+
+def _check_strategy_selection(parser, argv):
+    """Refuse repeated or trading-only --strategy values before parsing."""
+    selected = []
+    for i, token in enumerate(argv):
+        if token == "--":
+            break
+        if token == "--strategy" and i + 1 < len(argv):
+            selected.append(argv[i + 1])
+        elif token.startswith("--strategy="):
+            selected.append(token.split("=", 1)[1])
+    if len(selected) > 1:
+        parser.error("--strategy may be given only once")
+    for key in selected:
+        strategy = registry.STRATEGIES.get(key)
+        if strategy is not None and key not in ADAPTERS:
+            parser.error(f"strategy {key!r} has no historical backtest; it supports "
+                         f"DEMO/LIVE trading via: tb-trade --strategy {key}")
+
+
 def main(argv=None, *, now=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
+    # Broker, LIVE and scheduling options are refused before anything else.
+    reject_broker_options(argparse.Namespace(), parser, argv)
+    _check_strategy_selection(parser, argv)
     args = parser.parse_args(argv)
+    if args.list_strategies:
+        if len(argv) > 1:
+            parser.error("--list-strategies takes no other arguments")
+        print(listing())
+        return 0
     reject_broker_options(args, parser, argv)
     try:
         plan = make_plan(request_from_args(args), now=now)

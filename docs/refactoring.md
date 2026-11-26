@@ -432,3 +432,151 @@ HEAD remains the starting commit above.
 ?? tests/test_package_layout.py
 ?? docs/refactoring.md
 ```
+
+# Unified `tb` CLI and strategy registry (issue #7)
+
+[Issue #7](https://github.com/whoami13579/trading-bot/issues/7) adds the
+preferred `tb-trade` and `tb-backtest` commands and a shared strategy capability
+registry. Strategy algorithms, trading execution and backtest results are
+unchanged. The full reference is in the [CLI guide](cli.md).
+
+## Before and after
+
+Before: each order-capable strategy had its own console command
+(`trading-bot-hma`, …) and root script (`hma.py`, …). Backtesting had a separate
+unified command (`trading-bot-backtest`) whose strategy list came from
+`backtesting.adapters.ADAPTERS`. Nothing recorded, in one place, which strategy
+supported DEMO, LIVE or backtesting.
+
+After:
+
+- `src/trading_bot/strategies/registry.py` explicitly declares every strategy's
+  key, name, supported modes, trading entry point (`module:function` of its
+  existing `main()`), backtest adapter key and legacy commands. It imports
+  nothing from the project.
+- `src/trading_bot/tools/trade.py` (`tb-trade`) checks the strategy, the
+  requested mode, foreign environment selectors and backtesting options. It then
+  calls the strategy's own `main()` exactly once with the remaining arguments.
+- `tb-backtest` is a second console-script name for the existing
+  `trading_bot.tools.backtest:main`. That CLI gained `--list-strategies`,
+  rejection of a repeated `--strategy`, a pointer to `tb-trade` for trading-only
+  strategies, and earlier rejection of broker/LIVE options (still exit 2, now
+  with a specific message instead of "unrecognized arguments").
+- `pyproject.toml` adds nine `tb-*` console commands and keeps all thirteen
+  `trading-bot-*` commands.
+
+No new trading engine, parser, default, risk check or broker code was added.
+Simulation parameters stay in the backtesting adapters, and trading options stay
+in each strategy's parser. Tests fail if the registry diverges from `ADAPTERS`
+or from the legacy console-script targets.
+
+## Legacy root-level file inventory
+
+Each file was checked for its role, its callers and its compatibility contract.
+None were removed. Every root module is part of the compatibility contract that
+`tests/test_package_layout.py` (`LEGACY`) enforces. Most are documented commands,
+and `test.py` itself imports two of the `scripts.*` aliases.
+
+| File | Role | Decision |
+| --- | --- | --- |
+| `main.py` | Moving-average CLI wrapper and import alias | Retained: documented command and tested alias; docstring now names `tb-trade --strategy moving-average` |
+| `sma.py` | SMA CLI wrapper and import alias | Retained; points to `tb-trade --strategy sma` |
+| `hma.py` | HMA CLI wrapper (including `--backtest`) and import alias | Retained; points to `tb-trade --strategy hma` |
+| `ema_hma.py` | EMA/HMA CLI wrapper and import alias | Retained; points to `tb-trade --strategy ema-hma` |
+| `multiple_hma.py` | Multiple-HMA CLI wrapper and import alias | Retained; points to `tb-trade --strategy multiple-hma` |
+| `ping_service.py` | Ping CLI wrapper and import alias | Retained (`tb-ping` is preferred) |
+| `test_api_key.py` | DEMO roundtrip CLI wrapper and import alias | Retained (`tb-demo-roundtrip` is preferred) |
+| `test_live_api.py` | LIVE preflight CLI wrapper and import alias | Retained (`tb-live-preflight` is preferred) |
+| `test_strategy.py` | Read-only broker-history diagnostic wrapper | Retained: no `tb-*` equivalent |
+| `TradingApi.py`, `tradingPosition.py`, `colors.py`, `scheduler.py`, `indicators.py` | Import aliases only | Retained: tested import compatibility, used by existing tests |
+| `test.py` | Original order-capable SELL script | Unchanged, byte for byte |
+| `scripts/*.py` | Executable wrappers and `scripts.*` import aliases | Retained: `test.py` and the tests import `scripts.trading_config` and `scripts.network_errors` |
+
+The wrappers contain no strategy or API implementation, so keeping them adds no
+duplication. They can be retired later, together with their tests and
+documentation, once external callers and stored operational commands use the
+`tb-*` commands.
+
+## Verification
+
+- Offline suite: 647 tests before the change and 687 after (40 new tests in
+  `tests/test_unified_cli.py`; one console-script count assertion in
+  `tests/test_package_layout.py` was updated from 13 to 22). All pass, none are
+  skipped.
+- Every legacy strategy console script and `tb-trade --strategy NAME` reach the
+  same startup function with identical parsed arguments. This is checked in
+  process and through the installed executables, with broker startup replaced by
+  a recorder. The tests send no request and authenticate nothing.
+- Installed `tb-backtest` and `trading-bot-backtest` produce identical
+  `report.json` files and configuration hashes for HMA, Donchian, and Grid with
+  manual and automatic bounds. The same reports matched those produced by the
+  unmodified `origin/master` code (`cb42301`).
+- Help, listing and rejected `tb-trade` commands are run in child processes whose
+  audit hook fails on any strategy, `trading_bot.api`, `trading_bot.risk` or
+  credential-loading import, any socket connection or DNS lookup, and any `.env`
+  or private-state access.
+
+## Backtesting for every order-capable strategy (issue #7, extended scope)
+
+At the reviewer's request, issue #7 also gave moving-average, sma, ema-hma and
+multiple-hma a historical backtest. Every registered strategy now supports
+`tb-backtest`, and Donchian and Grid remain simulation-only. Details:
+[strategy backtesting](strategy-backtesting.md).
+
+- **Shared rules:** `strategies/signals.py` (new, broker-free) holds the decision
+  and position rules and the default periods and timeframes. Pure
+  `two_ema_signal` and `multiple_signal` were extracted in
+  `strategies/indicators.py`; their former API wrappers now call them.
+  `moving_average.py`, `sma.py`, `ema_hma.py` and `multiple_hma.py` import their
+  defaults from `signals`, and the moving-average and sma loops call the shared
+  side functions. Their control flow, order calls, printing and error handling
+  are unchanged. Offline tests compare the extracted functions with the former
+  formulas, and drive each online loop with a mocked broker against the backtest
+  decisions.
+- **Simulation:** four candle classes in `backtesting/strategy.py`. Causal
+  higher-timeframe aggregation (`calendar.completed_groups` and
+  `completed_aggregates`) uses only buckets that had closed and are complete;
+  nothing is filled.
+- **Adapters:** four new `StrategyAdapter`s. Each adapter now carries its own
+  parameter-to-attribute mapping, which replaces a module-level map whose
+  `hma_period` entry would have misread other strategies. An opt-in
+  `uses_time_frame` lets `plan()` pass the signal timeframe to multiple-hma.
+  `plan()` now resolves the timeframe before building the strategy.
+- **CLI:** an option declared by several strategies (`--hma-period`) is
+  registered once. Its default depends on `--strategy`, and other strategies
+  reject it with exit 2, as before.
+- **Registry:** the four strategies now declare the `backtest` mode with an
+  adapter of the same key. The registry tests require the backtest set to equal
+  `ADAPTERS`.
+
+Unchanged: HMA, Donchian and Grid results and configuration hashes (pinned tests,
+plus identical real-data reports before and after), the online strategies'
+behavior, and every safety control. Offline tests: 687 after the CLI commit,
+719 after this one (32 new in `tests/test_strategy_backtests.py`). One existing
+assertion of the adapter key set was updated to the seven strategies.
+
+## PR #8 review corrections
+
+| Finding | Resolution |
+| --- | --- |
+| Moving-average/SMA backtests reverse (close, then open); online they send an opposite order without closing | Verified the online path. DEMO: a netting account ends flat, a hedging account holds offsetting positions. LIVE: the gate refuses the order (`live_open_order_limit_reached`) and stops. Reports state the difference; tests pin all three cases. Online behavior unchanged; follow-up #10 |
+| Online EMA-HMA/Multiple-HMA read forming candles; backtests use completed ones | Verified: only HMA filters (`completed_closes`). The backtests stay causal, and reports state the difference. Tests show forming candles change real EMA-HMA decisions and that 4H candles are never used before they close. Follow-up #11 |
+| Safety differs between strategies | Comparison table in [trading safety](trading-safety.md#safety-capabilities-by-strategy); docs no longer imply equal guarantees. Shared execution component: #9 |
+| Stale help text listing only hma, donchian, grid | `tb-trade --help` lists backtestable strategies from the registry |
+| `tb-trade --strategy hma --help` advertised refused `--backtest` options | New `hma.trade` entry point: `hma.main(simulation_help=False)` keeps those options parseable but suppressed from help. `trading-bot-hma`/`hma.py` are unchanged |
+| Options of unrelated strategies treated as shared trading options | Per-strategy rule: `option_names() - {--symbol, --size, ...} - Strategy.trading_options`. Each declaration is checked against the strategy's real parser |
+| Private argparse use (`parser._actions`) | `backtesting.cli.option_names()` records the public `Action.option_strings` returned by `add_argument`; a test checks that no `._actions` remains in `src/` |
+
+Report bytes: reports of the five order-capable strategies gain an
+`online_differences` list (JSON), a warning block at the top of the terminal
+report and a warning box in `equity.html`. Donchian and Grid reports are
+byte-identical. Every trade, number, assumption and configuration/data hash is
+unchanged. This was verified on the seven real-data runs, on fixture runs against
+`origin/master`, and by a test that runs the same backtest with and without the
+warnings.
+
+Offline tests: 719 before the corrections, 731 after (12 new in
+`tests/test_execution_assumptions.py`; several existing CLI tests updated to the
+corrected behavior).
+
+Planned online support for the simulation-only strategies: Donchian #12, Grid #13.

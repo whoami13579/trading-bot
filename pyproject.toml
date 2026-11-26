@@ -20,6 +20,17 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [project.scripts]
+# Preferred commands.
+tb-trade = "trading_bot.tools.trade:main"
+tb-backtest = "trading_bot.tools.backtest:main"
+tb-check-offline = "trading_bot.tools.check_offline:main"
+tb-check-environment = "trading_bot.tools.check_environment:main"
+tb-demo-readonly = "trading_bot.tools.demo_readonly:main"
+tb-diagnose-demo-auth = "trading_bot.tools.diagnose_demo_auth:main"
+tb-demo-roundtrip = "trading_bot.tools.demo_roundtrip:main"
+tb-live-preflight = "trading_bot.tools.live_preflight:main"
+tb-ping = "trading_bot.tools.ping_service:main"
+# Backward-compatible commands; strategy commands equal tb-trade --strategy KEY.
 trading-bot-sma = "trading_bot.strategies.sma:main"
 trading-bot-hma = "trading_bot.strategies.hma:main"
 trading-bot-ema-hma = "trading_bot.strategies.ema_hma:main"

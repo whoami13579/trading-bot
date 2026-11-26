@@ -1,6 +1,12 @@
 import argparse
 from trading_bot.api.client import TradingApi
 from trading_bot.config.trading_config import add_trading_arguments, create_trading_api
+from trading_bot.strategies.signals import (
+    MOVING_AVERAGE_PERIOD,
+    POLLING_TIME_FRAME,
+    moving_average_side,
+    price_average,
+)
 import time
 
 SYMBOL = "EURUSD"
@@ -14,13 +20,9 @@ def update_prices(prices: list, tradingApi: TradingApi, symbol=SYMBOL):
     tradingApi.prepare_trading_cycle()
     prices.pop(0)
 
-    result, _ = tradingApi.getHistoricalPrices(symbol, "MINUTE", 1)
+    result, _ = tradingApi.getHistoricalPrices(symbol, POLLING_TIME_FRAME, 1)
     price = result['prices'][0]['openPrice']['ask']
     prices.append(price)
-
-
-def price_average(prices: list) -> float:
-    return sum(prices) / len(prices)
 
 
 def main():
@@ -29,7 +31,7 @@ def main():
     args = parser.parse_args()
     SYMBOL, QUANTITY = args.symbol, args.size
     tradingApi = create_trading_api(args, symbol=SYMBOL, size=QUANTITY)
-    result, _ = tradingApi.getHistoricalPrices(SYMBOL, "MINUTE", 20)
+    result, _ = tradingApi.getHistoricalPrices(SYMBOL, POLLING_TIME_FRAME, MOVING_AVERAGE_PERIOD)
 
     prices = []
     for item in result['prices']:
@@ -57,7 +59,9 @@ def main():
         print(prices)
         print("----------")
 
-        if prices[-1] > price_average(prices) and status != "BUY":
+        # Shared with the backtest: BUY above the window mean, SELL below, nothing when equal.
+        side = moving_average_side(prices)
+        if side == "BUY" and status != "BUY":
             result, statuscode = tradingApi.createPosition(SYMBOL, "BUY", QUANTITY)
             if statuscode == 200:
                 print("Buy")
@@ -66,7 +70,7 @@ def main():
                 print(result)
             print("----------")
 
-        if prices[-1] < price_average(prices) and status != "SELL":
+        if side == "SELL" and status != "SELL":
             result, statuscode = tradingApi.createPosition(SYMBOL, "SELL", QUANTITY)
             if statuscode == 200:
                 print("SELL")

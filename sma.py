@@ -1,4 +1,7 @@
-"""Compatibility import for trading_bot.strategies.sma."""
+"""Compatibility import for trading_bot.strategies.sma.
+
+Preferred command: uv run tb-trade --strategy sma
+"""
 
 from importlib import import_module
 import sys

@@ -2,18 +2,24 @@ import argparse
 import time
 from trading_bot.api.client import TradingApi
 from trading_bot.config.trading_config import add_trading_arguments, create_trading_api
+from trading_bot.strategies.signals import (
+    POLLING_TIME_FRAME,
+    SMA_FAST_PERIOD,
+    SMA_SLOW_PERIOD,
+    price_side,
+)
 
 # Configuration Constants
 SYMBOL = "EURUSD"
-FAST_PERIOD = 9
-SLOW_PERIOD = 21
+FAST_PERIOD = SMA_FAST_PERIOD
+SLOW_PERIOD = SMA_SLOW_PERIOD
 QUANTITY = 100
 SLEEP_TIME = 60
 
 def get_buffer_prices(tradingApi, count, symbol=SYMBOL):
     """Fetches initial historical data to populate the moving averages."""
     try:
-        result, _ = tradingApi.getHistoricalPrices(symbol, "MINUTE", count)
+        result, _ = tradingApi.getHistoricalPrices(symbol, POLLING_TIME_FRAME, count)
         return [item['openPrice']['ask'] for item in result['prices']]
     except Exception as e:
         print(f"Error initializing prices: {e}")
@@ -43,7 +49,7 @@ def main():
         try:
             tradingApi.prepare_trading_cycle()
             # Fetch latest single price
-            result, _ = tradingApi.getHistoricalPrices(SYMBOL, "MINUTE", 1)
+            result, _ = tradingApi.getHistoricalPrices(SYMBOL, POLLING_TIME_FRAME, 1)
             new_price = result['prices'][0]['openPrice']['ask']
 
             # Update price list (Rolling window)
@@ -56,9 +62,10 @@ def main():
 
             print(f"Price: {new_price:.5f} | Fast: {fast_sma:.5f} | Slow: {slow_sma:.5f}")
 
-            # 4. Strategy Logic: Crossover
+            # 4. Strategy Logic: Crossover (shared with the backtest)
+            side = price_side(fast_sma, slow_sma)
             # BUY if Fast crosses ABOVE Slow
-            if fast_sma > slow_sma and current_status != "BUY":
+            if side == "BUY" and current_status != "BUY":
                 print(">>> TREND UP: Executing BUY")
                 # Note: You should call a 'closePosition' function here if your API requires it
                 res, code = tradingApi.createPosition(SYMBOL, "BUY", QUANTITY)
@@ -68,7 +75,7 @@ def main():
                     print(f"Trade Failed: {res}")
 
             # SELL if Fast crosses BELOW Slow
-            elif fast_sma < slow_sma and current_status != "SELL":
+            elif side == "SELL" and current_status != "SELL":
                 print(">>> TREND DOWN: Executing SELL")
                 res, code = tradingApi.createPosition(SYMBOL, "SELL", QUANTITY)
                 if code == 200:

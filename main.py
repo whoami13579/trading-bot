@@ -1,4 +1,7 @@
-"""Compatibility import for trading_bot.strategies.moving_average."""
+"""Compatibility import for trading_bot.strategies.moving_average.
+
+Preferred command: uv run tb-trade --strategy moving-average
+"""
 
 from importlib import import_module
 import sys

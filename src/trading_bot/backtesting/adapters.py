@@ -5,19 +5,30 @@ preserved defaults, builds the strategy, and states the defaults that make the
 unified CLI reproduce the strategy's existing backtest command.
 
 Adding a strategy = a pure ``target(completed_candles[, position])`` class with a
-``warmup`` plus one ``StrategyAdapter`` entry in ``ADAPTERS``. A strategy whose
-native execution is ``"grid"`` manages many limit orders and runs only on the
-grid execution model.
+``warmup`` plus one ``StrategyAdapter`` entry in ``ADAPTERS`` (and its capability
+entry in ``trading_bot.strategies.registry``). A strategy whose native execution
+is ``"grid"`` manages many limit orders and runs only on the grid execution model.
+
+Several strategies may declare the same option (for example ``--hma-period``);
+it is then one CLI option whose default and validity depend on --strategy.
 """
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Callable
 
 from trading_bot.strategies.donchian import DonchianStrategy
+from trading_bot.strategies import signals
 from trading_bot.strategies.grid import DEFAULT_LOOKBACK, AutoGridStrategy, GridStrategy
-from .strategy import HmaStrategy
+from .strategy import (
+    EmaHmaStrategy,
+    HmaStrategy,
+    MovingAverageStrategy,
+    MultipleHmaStrategy,
+    SmaCrossoverStrategy,
+)
+from .timeframes import MINUTES
 
 
 def decimal_option(value):
@@ -55,6 +66,13 @@ class StrategyAdapter:
     # Optional argument-combination check on the explicit parameters; returns an
     # error message, raised as a usage error before any data access.
     check: Callable[[dict], str | None] | None = None
+    # Parameter dest -> strategy attribute, where they differ.
+    attributes: dict = field(default_factory=dict)
+    # The factory also receives the resolved signal timeframe (multi-timeframe rules).
+    uses_time_frame: bool = False
+    # How the online strategy's actual candles, orders or limits differ from this
+    # simulation. Shown in every terminal, JSON and HTML report of the strategy.
+    online_differences: tuple[str, ...] = ()
 
     def defaults(self):
         return {p.dest: p.default for p in self.parameters}
@@ -68,12 +86,42 @@ class StrategyAdapter:
     def values(self, strategy):
         # A parameter the built strategy does not carry (e.g. grid bounds in
         # automatic mode) is recorded as None.
-        return {p.dest: getattr(strategy, _ATTRIBUTE.get(p.dest, p.dest), None)
+        return {p.dest: getattr(strategy, self.attributes.get(p.dest, p.dest), None)
                 for p in self.parameters}
 
 
-_ATTRIBUTE = {"hma_period": "period", "entry_lookback": "entry", "exit_lookback": "exit"}
-
+# Online/backtest differences, verified against the online strategy modules and the
+# LIVE execution gate (risk/live_execution.py); see docs/strategy-backtesting.md.
+LIVE_LIMITS = (
+    "LIVE limits: a LIVE run also stops at its --max-orders limit (default one opening "
+    "order per process), the other LIVE risk limits and its broker stop; this "
+    "simulation applies none of them and can trade more often than a LIVE run."
+)
+REVERSAL = (
+    "Execution differs from the online strategy: this simulation closes the position "
+    "and opens the opposite side on each signal change (stop and reverse). Online, the "
+    "strategy sends one opposite market order without closing first. A netting DEMO "
+    "account then ends flat, a hedging DEMO account holds two offsetting positions, and "
+    "a LIVE run stops at that order (live_open_order_limit_reached). Only the signals "
+    "match. Reported exposure, executed legs, costs and P&L model the intended "
+    "stop-and-reverse, not any broker account."
+)
+POLLED_OPENS = (
+    "Signal timing: online polls every 60 s and reads the open of the candle that has "
+    "just started. This simulation reads the same opens of completed candles, decides "
+    "at the candle's close and fills at the next open, one candle later."
+)
+FORMING_CANDLES = (
+    "Candle selection differs from the online strategy: online reads the newest broker "
+    "candles at each boundary, which end with the candle still forming. This simulation "
+    "uses completed candles only, so online windows are one candle later and end with an "
+    "unfinished close. Signals can differ."
+)
+FORMING_LONG_TERM = (
+    "Higher timeframe: online, the long-term vote also includes the long-term candle "
+    "still in progress. This simulation uses a long-term candle only after it has fully "
+    "closed and none of its constituents is missing."
+)
 
 def _hma(hma_period, direction):
     return HmaStrategy(hma_period, direction)
@@ -97,6 +145,8 @@ HMA = StrategyAdapter(
     time_frame="MINUTE_30",
     data_source="dukascopy",
     execution="continuous",
+    attributes={"hma_period": "period"},
+    online_differences=(LIVE_LIMITS,),
 )
 
 DONCHIAN = StrategyAdapter(
@@ -113,6 +163,7 @@ DONCHIAN = StrategyAdapter(
     time_frame="HOUR",
     data_source="snapshot",
     execution="research",
+    attributes={"entry_lookback": "entry", "exit_lookback": "exit"},
 )
 
 def _grid(ema_period, grid_lower, grid_upper, grid_intervals, level_size, max_position,
@@ -180,7 +231,93 @@ GRID = StrategyAdapter(
     check=_check_grid,
 )
 
-ADAPTERS = {adapter.key: adapter for adapter in (HMA, DONCHIAN, GRID)}
+ASK_OPEN = "ask open of each completed candle (indicative open without bid/ask data)"
+ASK_CLOSE = "ask close of each completed candle (indicative close without bid/ask data)"
+
+
+def _hma_period(default):
+    return Parameter(("--hma-period", "--hma_period"), "hma_period", default, int,
+                     help=f"HMA period, integer >= 2 (default {default})")
+
+
+MOVING_AVERAGE = StrategyAdapter(
+    key="moving-average",
+    parameters=(
+        Parameter(("--average-period",), "average_period", signals.MOVING_AVERAGE_PERIOD, int,
+                  help="Candles in the rolling mean, integer >= 2 (default "
+                  f"{signals.MOVING_AVERAGE_PERIOD}; fixed in the online strategy)"),
+    ),
+    factory=MovingAverageStrategy,
+    online_differences=(REVERSAL, POLLED_OPENS, LIVE_LIMITS),
+    describe=lambda s: f"Moving average (stop and reverse), {s.average_period} candle opens",
+    signal_price=ASK_OPEN,
+    time_frame=signals.POLLING_TIME_FRAME,
+    data_source="dukascopy",
+    execution="continuous",
+)
+
+SMA = StrategyAdapter(
+    key="sma",
+    parameters=(
+        Parameter(("--fast-period",), "fast_period", signals.SMA_FAST_PERIOD, int,
+                  help=f"Fast SMA period (default {signals.SMA_FAST_PERIOD}; fixed online)"),
+        Parameter(("--slow-period",), "slow_period", signals.SMA_SLOW_PERIOD, int,
+                  help="Slow SMA period, longer than the fast period (default "
+                  f"{signals.SMA_SLOW_PERIOD}; fixed online)"),
+    ),
+    factory=SmaCrossoverStrategy,
+    online_differences=(REVERSAL, POLLED_OPENS, LIVE_LIMITS),
+    describe=lambda s: f"SMA {s.fast_period}/{s.slow_period} crossover (stop and reverse)",
+    signal_price=ASK_OPEN,
+    time_frame=signals.POLLING_TIME_FRAME,
+    data_source="dukascopy",
+    execution="continuous",
+)
+
+EMA_HMA = StrategyAdapter(
+    key="ema-hma",
+    parameters=(
+        Parameter(("--long-period", "--long_period"), "long_period", signals.EMA_HMA_LONG_PERIOD,
+                  int, help=f"Long EMA period (default {signals.EMA_HMA_LONG_PERIOD})"),
+        Parameter(("--short-period", "--short_period"), "short_period",
+                  signals.EMA_HMA_SHORT_PERIOD, int,
+                  help=f"Short EMA period (default {signals.EMA_HMA_SHORT_PERIOD})"),
+        _hma_period(signals.EMA_HMA_HMA_PERIOD),
+    ),
+    factory=EmaHmaStrategy,
+    online_differences=(FORMING_CANDLES, LIVE_LIMITS),
+    describe=lambda s: (f"EMA {s.short_period}/{s.long_period} trend with HMA "
+                        f"{s.hma_period} confirmation"),
+    signal_price=ASK_CLOSE,
+    time_frame=signals.EMA_HMA_TIME_FRAME,
+    data_source="dukascopy",
+    execution="continuous",
+)
+
+MULTIPLE_HMA = StrategyAdapter(
+    key="multiple-hma",
+    parameters=(
+        _hma_period(signals.MULTIPLE_HMA_HMA_PERIOD),
+        Parameter(("--long-term", "--long_term"), "long_term", signals.MULTIPLE_HMA_LONG_TERM,
+                  str, tuple(MINUTES),
+                  help="Timeframe of the multiple-indicator vote, a whole multiple of "
+                  f"--time-frame (default {signals.MULTIPLE_HMA_LONG_TERM})"),
+    ),
+    factory=MultipleHmaStrategy,
+    online_differences=(FORMING_CANDLES, FORMING_LONG_TERM, LIVE_LIMITS),
+    describe=lambda s: (f"Multiple HMA: {s.long_term} 13-indicator vote with "
+                        f"{s.time_frame} HMA {s.hma_period} confirmation"),
+    signal_price=ASK_CLOSE + "; long-term candles aggregated from completed signal candles",
+    time_frame=signals.MULTIPLE_HMA_SHORT_TERM,
+    data_source="dukascopy",
+    execution="continuous",
+    uses_time_frame=True,
+)
+
+ADAPTERS = {
+    adapter.key: adapter
+    for adapter in (MOVING_AVERAGE, SMA, HMA, EMA_HMA, MULTIPLE_HMA, DONCHIAN, GRID)
+}
 
 
 def adapter_for(key):

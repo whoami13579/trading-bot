@@ -3,7 +3,9 @@
 from dataclasses import asdict
 from datetime import datetime, timezone
 import csv
+import html as html_text
 import json
+import textwrap
 import uuid
 from .cache import safe_directory
 from .models import dec, json_value
@@ -102,6 +104,10 @@ def build_report(
             "notes": execution.notes(dataset),
         }
     )
+    if adapter.online_differences:
+        # How the online strategy's candles, orders or limits differ from this run.
+        # Present only for strategies that declare differences; not hashed.
+        report["online_differences"] = list(adapter.online_differences)
     report.update(execution.extras(result))  # Model-specific, additive sections.
     return report
 
@@ -188,13 +194,22 @@ def save_report(report, root):
     ]
     html = """<!doctype html><html><meta charset="utf-8"><title>Backtest equity</title>
 <style>body{font:16px system-ui;max-width:1100px;margin:40px auto;padding:0 20px;background:#101827;color:#e2e8f0}canvas{width:100%;height:420px;background:#172237}p{color:#b8c7d8}</style>
-<h1>Historical simulated equity (USD)</h1><p>Observed candle opens/closes; unknown costs remain unmodeled. Hover for values.</p><canvas id="chart"></canvas><p id="value"></p><script>
+<h1>Historical simulated equity (USD)</h1>WARNINGS<p>Observed candle opens/closes; unknown costs remain unmodeled. Hover for values.</p><canvas id="chart"></canvas><p id="value"></p><script>
 const data=POINTS, c=document.getElementById('chart'),ctx=c.getContext('2d'),out=document.getElementById('value');
 function draw(){c.width=c.clientWidth*devicePixelRatio;c.height=420*devicePixelRatio;ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);let w=c.clientWidth,h=420;ctx.clearRect(0,0,w,h);let lo=data.reduce((v,p)=>Math.min(v,p.equity),Infinity),hi=data.reduce((v,p)=>Math.max(v,p.equity),-Infinity);if(hi===lo){hi+=1;lo-=1;}ctx.strokeStyle='#43d9ac';ctx.lineWidth=2;ctx.beginPath();data.forEach((p,i)=>{let x=55+i/Math.max(1,data.length-1)*(w-75),y=380-(p.equity-lo)/(hi-lo)*340;i?ctx.lineTo(x,y):ctx.moveTo(x,y)});ctx.stroke();ctx.fillStyle='#d1dce8';ctx.fillText(hi.toFixed(2),5,30);ctx.fillText(lo.toFixed(2),5,385);}
 c.onmousemove=e=>{let i=Math.round((e.offsetX-55)/(c.clientWidth-75)*(data.length-1));i=Math.max(0,Math.min(data.length-1,i));out.textContent=data[i].time+' — $'+data[i].equity.toFixed(4);};window.onresize=draw;draw();
-</script></html>""".replace("POINTS", json.dumps(points))
+</script></html>""".replace("POINTS", json.dumps(points)).replace("WARNINGS", _html_warnings(report))
     (destination / "equity.html").write_text(html)
     return destination
+
+
+def _html_warnings(report):
+    differences = report.get("online_differences") or []
+    if not differences:
+        return ""
+    items = "".join(f"<li>{html_text.escape(text)}</li>" for text in differences)
+    return ('<div style="border:2px solid #f5a524;padding:4px 16px;margin:16px 0;color:#f8d28a">'
+            "<strong>Online and backtest execution differ:</strong><ul>" + items + "</ul></div>")
 
 
 def money(value):
@@ -205,9 +220,14 @@ def pct(value):
     return "unavailable" if value is None else f"{value:.4f}%"
 
 
-def print_report_table(lines, note):
+def print_report_table(lines, note, warnings=()):
     """Common terminal layout; callers supply strategy-specific fields and notes."""
     print("========== BACKTEST REPORT ==========")
+    if warnings:
+        print("!!! ONLINE AND BACKTEST EXECUTION DIFFER; READ BEFORE USING THESE RESULTS:")
+        for text in warnings:
+            print(textwrap.fill(text, width=88, initial_indent="  - ", subsequent_indent="    "))
+        print("-------------------------------------")
     for name, value in lines:
         print(f"{name + ':':24} {value}")
     print(note)
@@ -381,4 +401,5 @@ def report_lines(report, path=None):
 
 
 def print_report(report, path=None):
-    print_report_table(report_lines(report, path), report["notes"])
+    print_report_table(report_lines(report, path), report["notes"],
+                       report.get("online_differences", ()))

@@ -16,7 +16,8 @@ The fail-closed latch is intentionally unchanged. Instead:
    broker state before resuming. The stopped client is never revived.
 3. Missed candle boundaries are **skipped**, never replayed.
 
-This applies to `hma.py` / `trading-bot-hma`, including `--read-only`. SMA, EMA/HMA,
+This applies to `tb-trade --strategy hma` (and the legacy `hma.py` /
+`trading-bot-hma`, which run the same code), including `--read-only`. SMA, EMA/HMA,
 Multiple HMA, Moving Average and the diagnostic/integration tools keep their existing
 single-attempt, fail-closed behavior.
 
@@ -295,9 +296,9 @@ own handlers.
 ## 9. Verification
 
 ```bash
-uv run --locked scripts/check_offline.py                       # full offline suite
+uv run --locked tb-check-offline                               # full offline suite
 uv run python -m unittest tests.test_network_recovery          # issue #3 tests
-uv run hma.py --read-only --schedule-time-frame MINUTE --cycles 3   # DEMO, no signals/orders
+uv run tb-trade --strategy hma --read-only --schedule-time-frame MINUTE --cycles 3   # DEMO, no signals/orders
 ```
 
 `tests/test_network_recovery.py` drives the real `TradingApi`, scheduler, supervisor and

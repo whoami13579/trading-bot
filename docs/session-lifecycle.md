@@ -83,7 +83,8 @@ two-second post-boundary settling delay is retained.
 Verify the actual HMA loop without computing signals or submitting orders:
 
 ```bash
-uv run hma.py --read-only --schedule-time-frame MINUTE --cycles 3
+uv run tb-trade --strategy hma --read-only --schedule-time-frame MINUTE --cycles 3
+# equivalent legacy spelling: uv run hma.py --read-only --schedule-time-frame MINUTE --cycles 3
 ```
 
 This checks three scheduled boundaries using the normal MINUTE_30 history. `--read-only`

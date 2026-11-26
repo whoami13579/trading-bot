@@ -1,4 +1,7 @@
-"""Compatibility import for trading_bot.strategies.ema_hma."""
+"""Compatibility import for trading_bot.strategies.ema_hma.
+
+Preferred command: uv run tb-trade --strategy ema-hma
+"""
 
 from importlib import import_module
 import sys

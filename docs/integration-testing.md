@@ -4,14 +4,23 @@
 
 | Category | Commands | Account access / orders |
 | --- | --- | --- |
-| Offline | `uv run scripts/check_offline.py`, `uv run scripts/check_environment.py`, any supported `--help` | No account access; guards in checkers |
-| Saved report | `uv run scripts/demo_roundtrip.py --report-only` | Reads private saved results; no network |
-| DEMO read-only | `uv run scripts/demo_roundtrip.py --read-only`, `uv run scripts/demo_readonly.py` | Authenticated DEMO reads, no orders |
-| LIVE read-only | `uv run scripts/live_preflight.py --REAL` | Authenticated LIVE preflight, no orders |
-| Historical simulation | `uv run hma.py --backtest`, `uv run scripts/backtest.py` | Public Dukascopy/Yahoo history only; no broker access or orders |
+| Offline | `uv run tb-check-offline`, `uv run tb-check-environment`, `uv run tb-trade --list-strategies`, `uv run tb-backtest --list-strategies`, any supported `--help` | No account access; guards in checkers |
+| Saved report | `uv run tb-demo-roundtrip --report-only` | Reads private saved results; no network |
+| DEMO read-only | `uv run tb-demo-roundtrip --read-only`, `uv run tb-demo-readonly`, `uv run tb-trade --strategy hma --read-only` | Authenticated DEMO reads, no orders |
+| LIVE read-only | `uv run tb-live-preflight --REAL` | Authenticated LIVE preflight, no orders |
+| Historical simulation | `uv run tb-backtest --strategy NAME` (all seven strategies) | Public Dukascopy/Yahoo history or a local snapshot only; no broker access or orders |
 | Legacy history diagnostic | `uv run test_strategy.py` | Authenticated read-only broker history, then legacy quote simulation |
-| DEMO order execution | `uv run scripts/demo_roundtrip.py` and strategy commands without `--REAL`; `test.py` | Orders; separate authorization required during maintenance |
-| LIVE order execution | Strategies with `--REAL`; `scripts/demo_roundtrip.py --REAL`; explicit legacy LIVE execution flags below | Real-money orders subject to existing gates; never run during refactoring |
+| DEMO order execution | `uv run tb-demo-roundtrip`; `uv run tb-trade --strategy NAME` without `--REAL`; `test.py` | Orders; separate authorization required during maintenance |
+| LIVE order execution | `tb-trade --strategy NAME --REAL`; `tb-demo-roundtrip --REAL`; explicit legacy LIVE execution flags below | Real-money orders subject to existing gates; never run during refactoring |
+
+Each `tb-*` command has an original equivalent that still works: the
+`trading-bot-*` console command, the `scripts/*.py` wrapper, or the root script.
+For example, `scripts/check_offline.py`, `scripts/demo_roundtrip.py` and
+`test_api_key.py`, `scripts/live_preflight.py` and `test_live_api.py`,
+`hma.py --backtest` and `scripts/backtest.py`, and `hma.py` and
+`trading-bot-hma` for `tb-trade --strategy hma`. See the
+[CLI migration table](cli.md#backward-compatible-commands-and-migration).
+The procedures below keep the original spellings in which they were recorded.
 
 The ping command is a repeating service loop; `--help` alone is used in offline
 validation. `test.py` and `test_api_key.py` are executable integration tools, not

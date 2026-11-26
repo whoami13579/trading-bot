@@ -85,7 +85,12 @@ def plan(request: BacktestRequest, *, now=None) -> Plan:
     problem = adapter.check(request.parameters) if adapter.check else None
     if problem:
         raise PlanError(problem)
-    strategy = adapter.build(**request.parameters)
+    time_frame = request.time_frame or adapter.time_frame
+    if time_frame not in MINUTES:
+        raise PlanError(f"Unsupported timeframe: {time_frame}")
+    # Multi-timeframe rules validate their higher timeframe against this one.
+    bound = {"time_frame": time_frame} if adapter.uses_time_frame else {}
+    strategy = adapter.build(**request.parameters, **bound)
     grid = adapter.execution == "grid"
     if grid:
         if request.size is not None:  # Any explicit size, even one equal to level_size.
@@ -96,9 +101,6 @@ def plan(request: BacktestRequest, *, now=None) -> Plan:
         size = strategy.level_size
     else:
         size = DEFAULT_SIZE if request.size is None else request.size
-    time_frame = request.time_frame or adapter.time_frame
-    if time_frame not in MINUTES:
-        raise PlanError(f"Unsupported timeframe: {time_frame}")
     source = request.data_source or adapter.data_source
     if source not in DATA_SOURCES:
         raise PlanError(f"Unsupported data source: {source}")

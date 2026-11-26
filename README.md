@@ -1,25 +1,83 @@
 # Trading bot
 
 Capital.com trading strategies, guarded DEMO/LIVE integration tools, and a
-unified multi-strategy historical backtester (HMA and Donchian). Python **3.12** and the existing **uv** lock workflow are
-used throughout. DEMO is the default; LIVE always requires explicit selection.
+unified multi-strategy historical backtester covering every strategy. Python
+**3.12** and the existing **uv** lock workflow are used throughout.
 
-**`test.py` and the roundtrip tools can submit orders. They are not offline tests.**
-No account connection is needed for installation, automated tests, or CLI help.
+Strategies run in three separate ways:
+
+| Mode | Command | Broker access | Orders |
+| --- | --- | --- | --- |
+| Historical backtesting | `uv run tb-backtest --strategy NAME` | None; public market data or a local snapshot | Simulated only |
+| DEMO trading (default) | `uv run tb-trade --strategy NAME` | Capital.com DEMO | **Real DEMO orders** |
+| LIVE trading | `uv run tb-trade --strategy NAME --REAL` | Capital.com LIVE | **Real-money orders**, behind the LIVE gate |
+
+DEMO is the default; LIVE always requires explicit `--REAL` or `--real`.
+**`tb-trade`, `test.py` and the roundtrip tools can submit orders. They are not
+offline tests.** No account connection is needed for installation, automated
+tests, `--help` or `--list-strategies`.
 
 ## Quick start: offline
 
 ```bash
 uv sync --locked
 uv pip check --python .venv/bin/python
-uv run --locked scripts/check_environment.py
-uv run --locked scripts/check_offline.py
-uv run --locked scripts/demo_roundtrip.py --help
+uv run --locked tb-check-environment
+uv run --locked tb-check-offline
+uv run tb-trade --list-strategies
+uv run tb-backtest --list-strategies
+uv run tb-trade --strategy hma --help
 ```
 
 The offline runner blocks socket connections, HTTP sends, and credential loading.
 `uv --offline` alone controls package downloads; it does not block application
 network access. Keep `.env` and integration state private and ignored.
+
+## Strategies
+
+| Strategy | DEMO | LIVE | Backtesting |
+| --- | --- | --- | --- |
+| `moving-average` | Yes | Yes | Yes |
+| `sma` | Yes | Yes | Yes |
+| `hma` | Yes | Yes | Yes |
+| `ema-hma` | Yes | Yes | Yes |
+| `multiple-hma` | Yes | Yes | Yes |
+| `donchian` | No | No | Yes |
+| `grid` | No | No | Yes |
+
+Every strategy can be backtested. Donchian and Grid are historical simulations
+only; `tb-trade` rejects them before any broker access. DEMO/LIVE support for them
+is planned in #12 and #13 and is not implemented.
+
+The backtests reuse each online strategy's **signal rule** and defaults, but not
+necessarily its online candle timing, order execution or LIVE limits:
+
+- moving-average and sma simulate stop-and-reverse, while online they send an
+  opposite order without closing;
+- ema-hma and multiple-hma use completed candles, while online they read the
+  forming candle.
+
+Every affected report states these differences. Online safety controls also
+differ between strategies; only HMA has confirmation tracking and network
+recovery. See [strategy backtesting](docs/strategy-backtesting.md) and the
+[safety comparison](docs/trading-safety.md#safety-capabilities-by-strategy). Each strategy is implemented once under
+`src/trading_bot/strategies/` and declared once in
+`src/trading_bot/strategies/registry.py`. The [CLI guide](docs/cli.md) covers
+every option and default, which commands can place orders, the registry design,
+migration from the older commands, and how to add a strategy without a new
+wrapper script.
+
+```bash
+uv run tb-trade --strategy hma                       # DEMO
+uv run tb-trade --strategy hma --REAL                # LIVE, real money
+uv run tb-trade --strategy hma --symbol EURUSD --size 100 --time-frame MINUTE_5
+uv run tb-backtest --strategy grid --grid-lookback 100 --grid-intervals 20
+```
+
+`tb-trade` passes every other argument, unchanged, to the selected strategy's
+existing parser. It then runs that strategy's existing authentication, LIVE
+preflight, risk limits and network recovery, and refuses backtesting options.
+`tb-backtest` refuses `--REAL`, account, risk-limit and scheduling options.
 
 ## Structure
 
@@ -28,14 +86,15 @@ src/trading_bot/
   api/          Capital.com client, models, network/auth diagnostics and DEMO transport
   backtesting/  Shared historical data, engine, cost models, strategy adapters,
                 evaluation safeguards, reports and the unified backtest CLI
-  strategies/   SMA, HMA, EMA/HMA, multiple HMA, moving average, indicators, backtest
+  strategies/   Moving average, SMA, HMA, EMA/HMA, multiple HMA, Donchian, Grid,
+                indicators, legacy backtest helpers and the strategy registry
   risk/         LIVE execution controls, costs, journals, confirmations, reconciliation
   config/       Credential parsing, endpoint selection, strategy defaults, fixed paths
-  utils/        Scheduler, terminal colors, private report writes
-  tools/        Packaged CLI implementations
+  utils/        Scheduler, terminal colors, network recovery, private report writes
+  tools/        Packaged CLI implementations (tb-trade, tb-backtest, diagnostics)
 scripts/        Executable wrappers and legacy module aliases
 tests/          Offline tests and public price fixtures
-docs/           Setup, configuration, safety, integration procedures and migration notes
+docs/           CLI, setup, configuration, safety, integration and migration notes
 test.py         Original SELL integration entry point, preserved byte-for-byte
 ```
 
@@ -48,19 +107,23 @@ in the repository root.
 
 ## Common commands and imports
 
-| Purpose | Preferred command | Legacy command |
+| Purpose | Preferred command | Backward-compatible commands |
 | --- | --- | --- |
-| Offline suite | `uv run scripts/check_offline.py` | `uv run scripts/test_offline.py` |
-| CLI help | `uv run scripts/demo_roundtrip.py --help` | `uv run test_api_key.py --help` |
-| DEMO read-only preflight | `uv run scripts/demo_roundtrip.py --read-only` | `uv run test_api_key.py --read-only` |
-| LIVE read-only preflight | `uv run scripts/live_preflight.py --REAL` | `uv run test_live_api.py --REAL` |
-| Historical simulation, no broker access | `uv run trading-bot-backtest --strategy hma\|donchian\|grid` | `uv run hma.py --backtest`, `uv run src/trading_bot/strategies/donchian.py --backtest`, `uv run scripts/backtest.py` |
+| Offline suite | `uv run tb-check-offline` | `uv run scripts/check_offline.py`, `trading-bot-check-offline`, `uv run scripts/test_offline.py` |
+| Environment check | `uv run tb-check-environment` | `uv run scripts/check_environment.py`, `trading-bot-check-environment` |
+| Strategy list / help | `uv run tb-trade --list-strategies`, `uv run tb-trade --strategy hma --help` | `uv run trading-bot-hma --help` |
+| DEMO strategy | `uv run tb-trade --strategy hma` | `uv run trading-bot-hma`, `uv run hma.py` |
+| LIVE strategy | `uv run tb-trade --strategy hma --REAL` | `uv run trading-bot-hma --REAL`, `uv run hma.py --REAL` |
+| HMA DEMO read-only diagnostics | `uv run tb-trade --strategy hma --read-only --cycles 1` | `uv run hma.py --read-only --cycles 1` |
+| DEMO read-only preflight | `uv run tb-demo-roundtrip --read-only` | `uv run scripts/demo_roundtrip.py --read-only`, `uv run test_api_key.py --read-only` |
+| LIVE read-only preflight | `uv run tb-live-preflight --REAL` | `uv run scripts/live_preflight.py --REAL`, `uv run test_live_api.py --REAL` |
+| Historical simulation, no broker access | `uv run tb-backtest --strategy NAME` (any strategy) | `trading-bot-backtest`, `uv run hma.py --backtest`, `uv run src/trading_bot/strategies/donchian.py --backtest`, `uv run scripts/backtest.py` |
 | Legacy read-only broker-history diagnostic | `uv run test_strategy.py` | — |
 
 The account-access commands above are documentation, not part of offline validation.
-Installed console commands such as `uv run trading-bot-hma --help`,
-`uv run trading-bot-demo-roundtrip --help`, and `uv run trading-bot-backtest --help`
-work from an installed environment without checkout-relative import tricks.
+Every `tb-*` and `trading-bot-*` console command works from an installed
+environment without checkout-relative import tricks; all legacy commands keep
+their arguments and behavior (see the [migration table](docs/cli.md#backward-compatible-commands-and-migration)).
 Arguments such as `--REAL`/`--real`, `--account`, and existing risk limits retain
 their prior meanings. A roundtrip without `--read-only` is order-capable by default.
 
@@ -75,20 +138,25 @@ result = run_hma_backtest([1 + i / 1000 for i in range(100)], period=20)
 
 ## Historical backtesting
 
-One entry point runs every supported strategy on the same data, engine, cost
-models and report:
+One entry point, `tb-backtest` (also installed under its original name
+`trading-bot-backtest`), runs every supported strategy on the same data, engine,
+cost models and report:
 
 ```bash
-uv run trading-bot-backtest --strategy hma --symbol EURUSD --time-frame HOUR --size 100
-uv run trading-bot-backtest --strategy donchian --symbol EURUSD --time-frame HOUR --size 100
-uv run trading-bot-backtest --strategy donchian --cost-case high
-uv run trading-bot-backtest --strategy hma --end 2026-11-12 --slippage-pips 0.2
-uv run trading-bot-backtest --strategy grid --symbol EURUSD --time-frame HOUR \
+uv run tb-backtest --list-strategies
+uv run tb-backtest --strategy hma --symbol EURUSD --time-frame HOUR --size 100
+uv run tb-backtest --strategy sma --start 2025-09-01 --end 2025-10-01 --slippage-pips 0.1
+uv run tb-backtest --strategy ema-hma --long-period 200 --short-period 20 --hma-period 16
+uv run tb-backtest --strategy multiple-hma --time-frame MINUTE_30 --long-term HOUR_4
+uv run tb-backtest --strategy donchian --symbol EURUSD --time-frame HOUR --size 100
+uv run tb-backtest --strategy donchian --cost-case high
+uv run tb-backtest --strategy hma --end 2026-11-12 --slippage-pips 0.2
+uv run tb-backtest --strategy grid --symbol EURUSD --time-frame HOUR \
   --start 2025-09-01 --end 2025-10-01 --ema-period 50 \
   --grid-lower 1.1500 --grid-upper 1.1900 --grid-intervals 40 \
   --level-size 100 --max-position 500 --slippage-pips 0.1
 # Automatic bounds: lowest low / highest high of the 100 1H candles before --start.
-uv run trading-bot-backtest --strategy grid --symbol EURUSD --time-frame HOUR \
+uv run tb-backtest --strategy grid --symbol EURUSD --time-frame HOUR \
   --start 2025-09-01 --end 2025-10-01 --ema-period 50 --grid-lookback 100 \
   --grid-intervals 40 --level-size 100 --max-position 500 --slippage-pips 0.1
 ```
@@ -129,13 +197,16 @@ Commission, financing and slippage remain explicitly **unmodeled** unless config
 Each run saves JSON, trade/equity CSVs and an interactive `equity.html` in ignored
 `backtests/`; public price caches live in ignored `.cache/backtests/`. Backtest mode
 rejects `--REAL` and account/risk/scheduling options. Without `--backtest`, `hma.py`
-retains DEMO trading and `hma.py --REAL` retains guarded LIVE trading.
+retains DEMO trading and `hma.py --REAL` retains guarded LIVE trading;
+`tb-trade --strategy hma` is the preferred spelling of both.
 
 See [backtesting architecture, parameters, provider limits and verified results](docs/backtesting.md)
 and [the unified framework, compatibility notes and strategy integration guide](docs/backtesting-framework.md).
 
 ## Documentation
 
+- [Command-line interface, strategy registry and migration](docs/cli.md)
+- [Backtesting the order-capable strategies](docs/strategy-backtesting.md)
 - [Setup and dependencies](docs/setup.md)
 - [Historical backtesting](docs/backtesting.md)
 - [Unified backtesting framework](docs/backtesting-framework.md)

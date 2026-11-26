@@ -4,6 +4,7 @@ from trading_bot.config.trading_config import add_trading_arguments, create_trad
 import time
 from datetime import datetime, timedelta
 from trading_bot.strategies.indicators import calculate_multiple, calculate_hma_result
+from trading_bot.strategies import signals
 from trading_bot.utils.colors import colors
 import argparse
 import traceback
@@ -11,11 +12,11 @@ from trading_bot.utils.scheduler import wait_until_targets, timeframe_to_minutes
 
 # --- Configuration ---
 DEFAULT_SYMBOL: str = "EURUSD"
-DEFAULT_HMA_PERIOD: int = 20  # Length of the Hull window
+DEFAULT_HMA_PERIOD: int = signals.MULTIPLE_HMA_HMA_PERIOD  # Length of the Hull window
 DEFAULT_QUANTITY: int = 100
 DEFAULT_SLEEP_TIME: int = 60 * 30
-DEFAULT_SHORT_TERM = "MINUTE_30"
-DEFAULT_LONG_TERM = "HOUR_4"
+DEFAULT_SHORT_TERM = signals.MULTIPLE_HMA_SHORT_TERM
+DEFAULT_LONG_TERM = signals.MULTIPLE_HMA_LONG_TERM
 DEFAULT_DAYS = 5
 
 

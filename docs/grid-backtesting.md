@@ -6,7 +6,9 @@ It is a **historical simulation only**: no Capital.com authentication, no
 credentials, no broker client imports and no order submission. Every order in
 a report is a simulated record. `--REAL`, `--account` and broker risk,
 scheduling and read-only options are rejected before any data access, as for
-the other strategies.
+the other strategies. Grid has no DEMO or LIVE mode: `tb-trade --strategy grid`
+is rejected in every mode before any strategy or broker code loads. Run it with
+`tb-backtest --strategy grid` (also installed as `trading-bot-backtest`).
 
 Code: `strategies/grid.py` (pure rules), `backtesting/grid.py` (order book,
 fills, per-lot accounting), `GridExecution` in `backtesting/execution.py`, the
@@ -16,7 +18,7 @@ fills, per-lot accounting), `GridExecution` in `backtesting/execution.py`, the
 ## Reproducible EURUSD example
 
 ```bash
-uv run trading-bot-backtest --strategy grid --symbol EURUSD --time-frame HOUR \
+uv run tb-backtest --strategy grid --symbol EURUSD --time-frame HOUR \
   --data-source dukascopy --start 2025-09-01 --end 2025-10-01 \
   --ema-period 50 --grid-lower 1.1500 --grid-upper 1.1900 --grid-intervals 40 \
   --level-size 100 --max-position 500 --slippage-pips 0.1
@@ -47,7 +49,7 @@ An offline end-to-end run (no network) works on any study-format snapshot. Its
 the Dukascopy 1H run (net −$0.5800 rather than −$0.6120 for this period):
 
 ```bash
-uv run trading-bot-backtest --strategy grid --data-source snapshot \
+uv run tb-backtest --strategy grid --data-source snapshot \
   --snapshot .cache/donchian/eurusd-30m.json.gz --start 2025-09-01 --end 2025-10-01 \
   --grid-lower 1.1500 --grid-upper 1.1900 --grid-intervals 40
 ```
@@ -58,7 +60,7 @@ The same run with no `--grid-lower`/`--grid-upper`, so the bounds are measured f
 the 100 completed hourly candles before the start:
 
 ```bash
-uv run trading-bot-backtest --strategy grid --symbol EURUSD --time-frame HOUR \
+uv run tb-backtest --strategy grid --symbol EURUSD --time-frame HOUR \
   --data-source dukascopy --start 2025-09-01 --end 2025-10-01 \
   --ema-period 50 --grid-lookback 100 --grid-intervals 40 \
   --level-size 100 --max-position 500 --slippage-pips 0.1

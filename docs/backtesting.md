@@ -1,7 +1,12 @@
 # Historical HMA backtesting
 
-> HMA and Donchian now share one backtesting framework and one CLI
-> (`trading-bot-backtest --strategy hma|donchian|grid`). This page documents the HMA
+> All seven strategies (moving-average, sma, hma, ema-hma, multiple-hma, donchian
+> and grid) share one backtesting framework and one CLI (`tb-backtest --strategy
+> NAME`, also installed as `trading-bot-backtest`); see
+> [strategy backtesting](strategy-backtesting.md) for the four added in issue #7.
+> Reports of order-capable strategies list how their online execution differs
+> (`online_differences`); for HMA that is only the LIVE limits.
+> This page documents the HMA
 > continuous mode, data providers and accounting, which are unchanged. See
 > [backtesting-framework.md](backtesting-framework.md) for the shared architecture,
 > execution models, report format and compatibility notes.
@@ -15,13 +20,18 @@ No actual trades are part of the validation described here.
 
 ```bash
 uv sync --locked
-uv run hma.py --backtest
-uv run hma.py --backtest --time-frame MINUTE_5
-uv run hma.py --backtest --data-source yfinance
-uv run hma.py --backtest --initial-balance 5000 --size 200
-uv run hma.py --backtest --direction SELL --hma-period 20
-uv run scripts/backtest.py --end 2026-11-12
+uv run tb-backtest --strategy hma
+uv run tb-backtest --strategy hma --time-frame MINUTE_5
+uv run tb-backtest --strategy hma --data-source yfinance
+uv run tb-backtest --strategy hma --initial-balance 5000 --size 200
+uv run tb-backtest --strategy hma --direction SELL --hma-period 20
+uv run tb-backtest --strategy hma --end 2026-11-12
 ```
+
+The original spellings remain supported with the same defaults and numbers:
+`uv run hma.py --backtest [options]`, `uv run scripts/backtest.py [options]` and
+`trading-bot-backtest [options]`. `tb-trade` refuses `--backtest` and the other
+simulation options, so a historical simulation can never start a trading session.
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
@@ -51,7 +61,8 @@ Dates use UTC, even when your workstation uses a different timezone.
 Broker account/risk flags, `--REAL`/`--real`, `--read-only`, `--cycles`, `--days`
 and scheduling overrides conflict with backtesting and are rejected. Simulation-only
 arguments without `--backtest` are rejected to avoid accidentally starting trading.
-`scripts/backtest.py` and installed `trading-bot-backtest` are historical-only CLIs.
+`tb-backtest`, `scripts/backtest.py` and installed `trading-bot-backtest` are the
+same historical-only CLI.
 
 ## Providers and intervals
 
