@@ -46,53 +46,65 @@ for validation, not a running strategy.
 exactly one `--strategy` and refuses unknown or simulation-only strategies,
 backtesting options, and environment spellings other than `--REAL`/`--real`.
 It then calls the strategy's existing entry point once with the remaining
-arguments. `tb-trade` has no broker, retry or order code. **It does not give the
-strategies equal safety guarantees.** Each strategy keeps its own loop and its
-own controls, and they differ (see the comparison below). Every LIVE run goes
-through the same LIVE gate.
+arguments. `tb-trade` has no broker, retry or order code. Every strategy entry
+point runs the same online lifecycle, the
+[shared single-position execution](shared-execution.md) (issue #9), and every
+LIVE run goes through the same LIVE gate. The strategies still differ in their
+signal inputs and in what their decisions ask for (below).
 See the [CLI guide](cli.md).
 
 ### Safety capabilities by strategy
 
-Verified against the strategy modules, the client and the LIVE gate. "LIVE gate"
-means `risk/live_execution.py`, which applies to every order-capable strategy in
-LIVE. It checks account, environment, fees, exposure, margin, charges and
-drawdown, requires a broker stop, permits at most one owned position, verifies
-confirmations, keeps the process lock and the durable intent journal, never
-retries, and stops on any uncertainty.
+Verified against `execution/single_position.py`, the strategy modules, the client
+and the LIVE gate, and covered by offline tests with mocked brokers. "LIVE gate"
+means `risk/live_execution.py`: it checks account, environment, fees, exposure,
+margin, charges and drawdown, requires a broker stop, permits at most one owned
+position, verifies confirmations, keeps the process lock and the durable intent
+journal, never retries, and stops on any uncertainty. Offline tests are not a
+DEMO or LIVE validation; see the [DEMO validation plan](demo-validation-plan.md).
 
-| Capability | HMA | EMA-HMA | Multiple-HMA | SMA | Moving average |
+Shared by all five order-capable strategies (moving-average, sma, hma, ema-hma,
+multiple-hma):
+
+| Capability | Behavior |
+| --- | --- |
+| Scheduling | UTC candle boundaries (+2 s); missed boundaries skipped, never replayed; each boundary at most once |
+| Stale-signal guard | `--max-signal-delay` (`CycleGuard`): at cycle start, before the signal, immediately before every order; in LIVE also inside the gate and after rate limiting, immediately before the send |
+| Position state | the broker's position list each decision, never the requested orders |
+| What it closes | only the position this process opened, as confirmed by the broker (DEMO: confirmation; LIVE: the gate's journal). Unowned positions are never closed or adopted |
+| Entries | only while flat and no unowned position is open on the instrument |
+| Reversal (BUY to SELL or back) | never an opposite order: trading stops with the owned position open (`reversal_requires_confirmed_close`, issue #10) |
+| DEMO order confirmation | `PendingOrders`: confirmation and position visibility before the next decision; polled between boundaries; 300 s deadline stops |
+| Duplicate prevention | pending tracking, broker positions, and a stop on any unexpected order response |
+| Transport failure, interruption or exception during an order | stops; outcome reported uncertain; never retried |
+| Rejected or mismatched confirmation | stops for manual reconciliation (existing policy) |
+| Network outage | DEMO: bounded read retries, pause, resume with a re-verified client and broker reconciliation; LIVE: stop |
+| Session expiry | validated or renewed each boundary and every 5 minutes while waiting (`prepare_trading_cycle`) |
+| Graceful shutdown | SIGINT/SIGTERM deferred during an order request; never closes positions; exit reports owned positions and pending orders |
+| Restart | DEMO owns nothing after a restart: earlier positions block entries and are never adopted; unconfirmed orders warn at exit. LIVE: the journal blocks restart until reconciled |
+| `--read-only` | DEMO session/history diagnostics; the client refuses every mutation |
+| LIVE gate | yes, bound to the cycle deadline |
+
+Strategy-specific:
+
+| | HMA | EMA-HMA | Multiple-HMA | SMA | Moving average |
 | --- | --- | --- | --- | --- | --- |
-| Scheduling | candle boundaries; missed boundaries skipped | 5-minute boundaries | 30-minute boundaries | free-running 60 s loop | free-running 60 s loop after a startup wait |
-| Completed candles only | yes (`completed_closes`; a missing expected candle skips the cycle) | no: window ends with the forming candle (#11) | no: 30-minute and 4H windows end with candles in progress (#11) | uses the just-started candle's open | uses the just-started candle's open |
-| Stale-signal guard | `--max-signal-delay` (`CycleGuard`) | none | none | none | none |
-| Broker positions checked before an order | yes | yes | yes | no (tracked side only) | no (tracked side only) |
-| What it closes | every position on the symbol in DEMO; owned only in LIVE (gate) | same as HMA | same as HMA | never closes | never closes |
-| Opposite signal | goes flat (BUY/flat or SELL/flat) | closes on disagreement | closes on disagreement | opposite order without closing (#10) | opposite order without closing (#10) |
-| DEMO order confirmation | `PendingOrders`: confirmation and position visibility before the next order; timeout stops | none | none | none | none |
-| Duplicate prevention after a non-200 order response | pending tracking + positions | positions only | positions only | none: the same side is resent next loop | none: the same side is resent next loop |
-| Transport failure during an order | stops; outcome reported uncertain | stops | stops | stops | stops |
-| Network outage | DEMO: read retries, pause, resume with a re-verified client; LIVE: stop | stop (fail-closed) | stop | stop | stop |
-| Session expiry | renewed once per cycle (`prepare_trading_cycle`) | same | same | same | same |
-| Reauthentication after an outage | yes (DEMO) | no | no | no | no |
-| Graceful shutdown | SIGINT/SIGTERM deferred during an order request; shutdown reported | default interrupt | default | default | default |
-| Restart reconciliation | DEMO unconfirmed-order warning; LIVE journal | LIVE journal | LIVE journal | LIVE journal | LIVE journal |
-| LIVE gate | yes, bound to the cycle deadline | yes | yes | yes | yes |
+| Schedule | `--time-frame` (30 min) or `--schedule-time-frame` | `--time_frame` (5 min) | `--short_term` (30 min) | 1 min | 1 min |
+| Signal input | completed candles only; a missing expected candle skips the cycle | newest candles, ending with the forming one (#11) | newest candles; the 4H vote includes the 4H candle in progress (#11) | newest 21 ask opens (the just-started candle's open is a known price) | newest 20 ask opens, after a startup wait |
+| Decision | configured side / flat | agreement holds that side; disagreement is flat | agreement holds that side; disagreement or Neutral is flat | stop-and-reverse: stops at the first reversal (#10) | as SMA |
+| Market hours | `--days` (7) | `--days` (7) | `--days` (5: waits while closed) | always | always |
 
 Consequences:
 
-- In **DEMO**, HMA, EMA-HMA and Multiple-HMA close every position on the symbol,
-  including positions this process did not open. The LIVE gate refuses unrelated
-  positions.
-- SMA and moving average can send a **duplicate order** in DEMO when a broker
-  response was not HTTP 200 but the order executed. A network-level failure stops
-  the process instead.
-- In LIVE, SMA and moving average stop at their first opposite signal
-  (`live_open_order_limit_reached`).
+- In **DEMO**, HMA, EMA-HMA and Multiple-HMA no longer close positions they did
+  not open (they closed every position on the instrument before issue #9).
+- SMA and moving average no longer send an opposite order on a signal change.
+  They stop at the first reversal in DEMO and LIVE, leaving the owned position
+  open, until issue #10 adds a confirmed close-then-open.
+- Run one strategy per instrument and account: a second strategy's position is
+  unowned for the first and blocks its entries.
 
-Bringing the older strategies to HMA's level with one shared component, without
-copying HMA's loop into each module, is tracked in #9. Donchian and Grid have no
-online mode (planned in #12 and #13).
+Donchian and Grid have no online mode (planned in #12 and #13).
 
 | Selection | Environment | Endpoint |
 | --- | --- | --- |
@@ -155,21 +167,22 @@ positions in a previous journal block restart until manually reconciled with the
 actual account. Never clear unresolved state simply to retry an order. Session or
 account changes invalidate the gate and require a new automated preflight.
 
-Network outages: the HMA strategy retries read-only GETs with bounded backoff, and in
-DEMO pauses and resumes after re-authentication and broker reconciliation. Trade-changing
+Network outages: every order-capable strategy retries read-only GETs with bounded
+backoff, and in DEMO pauses and resumes after re-authentication and broker
+reconciliation. Trade-changing
 requests are never retried. An uncertain order outcome stops the bot for manual
 reconciliation, and LIVE never resumes automatically. A DEMO order acknowledged with HTTP
 200 blocks further strategy orders until the broker confirms it and the position list
 reflects it. The confirmation is polled between boundaries, and trading stops for manual
 reconciliation if the order is unresolved 300 seconds after it was acknowledged. This
 holds across reconnection but not across a process restart. Every exit with such an order
-warns to reconcile before restarting. Signals use only the completed candle expected for
-each boundary. In HMA, the LIVE gate rechecks `--max-signal-delay` after its broker reads,
-immediately before sending. An expired cycle sends nothing, leaves no pending intent and
+warns to reconcile before restarting. HMA signals use only the completed candle expected
+for each boundary (EMA-HMA and Multiple-HMA: issue #11). The LIVE gate rechecks
+`--max-signal-delay` after its broker reads, immediately before sending. An expired cycle sends nothing, leaves no pending intent and
 uses no order or charge allowance. See [network recovery](network-recovery.md).
 
-Ctrl+C stops the process without liquidating positions. In HMA, Ctrl+C or SIGTERM during
-an order request is deferred until that request returns. Broker stops remain in
+Ctrl+C stops the process without liquidating positions. In every order-capable strategy,
+Ctrl+C or SIGTERM during an order request is deferred until that request returns. Broker stops remain in
 place; review remaining exposure on Capital.com. Prices can slip or gap and fees
 or holding costs can exceed estimates. Entry-time risk limits do not guarantee a
 maximum loss or run a background liquidation service. A broker stop that closes a

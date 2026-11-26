@@ -70,21 +70,21 @@ Dukascopy bid/ask candles and the indicative price for Yahoo data.
 
 | Item | Online (`moving_average.py`) | Backtest |
 | --- | --- | --- |
-| Input | Open ask of the newest one-minute candle, polled every 60 s into a 20-price list | Open ask of each completed candle, last 20 |
+| Input | Open ask of the newest 20 one-minute broker candles at each one-minute boundary (the newest has just started) | Open ask of each completed candle, last 20 |
 | Rule | Newest price > mean → BUY; < mean → SELL; equal → no order | Same function (`moving_average_side`) |
-| Position | Sends the new side only when it differs from the tracked side (`status`) | Stop and reverse into the new side; hold otherwise |
+| Position | Enters the side when flat (broker-verified, owned); a reversal stops trading (#10) | Stop and reverse into the new side; hold otherwise |
 | Parameters | none (20 and `MINUTE` are fixed) | `--average-period` (20), `--time-frame` (`MINUTE`) |
-| Warm-up | 20 prices fetched at start | 20 completed candles |
+| Warm-up | 20 candles each boundary; no decision until the newest open first crosses the mean | 20 completed candles |
 
 ### sma
 
 | Item | Online (`sma.py`) | Backtest |
 | --- | --- | --- |
-| Input | Open ask of one-minute candles, polled every 60 s into a 21-price list | Open ask of each completed candle, last 21 |
+| Input | Open ask of the newest 21 one-minute broker candles at each one-minute boundary | Open ask of each completed candle, last 21 |
 | Rule | SMA(9) > SMA(21) → BUY; < → SELL; equal → no order | Same rule (`sma_side`) |
-| Position | Same `status` rule as moving-average | Stop and reverse; hold otherwise |
+| Position | Same as moving-average | Stop and reverse; hold otherwise |
 | Parameters | none (9, 21 and `MINUTE` are fixed) | `--fast-period` (9), `--slow-period` (21; must exceed fast), `--time-frame` (`MINUTE`) |
-| Warm-up | 21 prices fetched at start | 21 completed candles |
+| Warm-up | 21 candles each boundary | 21 completed candles |
 
 ### ema-hma
 
@@ -133,40 +133,44 @@ completed-close decision fills at the next observed open at the ask (BUY) or bid
 financing assumptions apply, and unconfigured costs are reported as unmodeled.
 `--execution-model research` also works; `grid` does not.
 
-### 1. Opposite orders (moving-average, sma): position and execution differ
+### 1. Reversals (moving-average, sma): position and execution differ
 
-Online, a signal change sends **one market order on the new side without closing
-the open position** (`createPosition` only). The backtest **closes and reopens**
-(stop and reverse), the intent described by the strategies' tracked `status` and
-comments. What an account actually holds afterwards:
+The backtest **closes and reopens** on every signal change (stop and reverse), the
+intent of these strategies. Online, both run the
+[shared single-position execution](shared-execution.md) (issue #9), which never
+sends an opposite order over an open position. At the first signal change after an
+entry it **stops trading** (`reversal_requires_confirmed_close`) and leaves the
+owned position open. What an account actually holds afterwards:
 
 | Run | After BUY, SELL, BUY, SELL signals | Verified by |
 | --- | --- | --- |
 | Backtest | long, short, long, short: always 100 units exposed | `ReversalExecutionTests` |
-| DEMO, netting account | long, flat, long, flat: net exposure 100, 0, 100, 0 | mocked netting account |
-| DEMO, hedging account | 1, 2, 3, 4 open positions; net exposure 100, 0, 100, 0 | mocked hedging account |
-| LIVE (hedging mode required) | first position opens; the opposite order is refused (`live_open_order_limit_reached`) and the process stops, leaving that position with its broker stop | real LIVE gate, mocked broker |
+| DEMO, netting or hedging account | one long position; trading stops at the SELL signal; no second order | mocked netting and hedging accounts |
+| LIVE (hedging mode required) | one long position with its broker stop; trading stops at the SELL signal before the gate; no second order | real LIVE gate, mocked broker |
+
+Before issue #9 the online strategies sent one opposite market order without
+closing: a netting DEMO account went flat (net 100, 0, 100, 0), a hedging DEMO
+account accumulated offsetting positions (1, 2, 3, 4), and LIVE stopped at that
+order inside the gate (`live_open_order_limit_reached`). That is no longer
+possible.
 
 Impact on the reported numbers:
 
-- **Exposure:** the backtest is always exposed after the first signal. Online
-  accounts are flat (netting) or hedged (hedging) half of the time, and a LIVE run
-  holds one position at most.
+- **Exposure:** the backtest is always exposed after the first signal. An online
+  run holds one position and then stops at the first reversal.
 - **Transaction costs:** a simulated reversal is two executed legs, close plus open
-  (for N signals: 2N − 1 legs). Online sends N orders, but a hedging account keeps
-  every position open, paying spread and financing on all of them until they are
-  closed manually.
+  (for N signals: 2N − 1 legs). Online sends one entry per run until #10.
 - **P&L:** realized and unrealized P&L follow the simulated positions, so they
   are not an estimate of any account's result.
 
-Changing the online behavior to an explicit close, confirm, then open is tracked
-in #10. This PR does not change online execution.
+A confirmed close, then open (or a long/flat rule) is tracked in #10. The
+report warning stays until it exists.
 
 ### 2. Candle selection (all four): timing differs
 
 | Strategy | Online input at a decision | Backtest input |
 | --- | --- | --- |
-| moving-average, sma | polled every 60 s (drifting): the open ask of the candle that has just started | the same opens of **completed** candles; decides at that candle's close, fills at the next open, one candle later |
+| moving-average, sma | at each one-minute boundary (+2 s): the open ask of the candle that has just started (previously polled every 60 s, drifting) | the same opens of **completed** candles; decides at that candle's close, fills at the next open, one candle later |
 | ema-hma | at each 5-minute boundary (+2 s): the newest 200 and 48 candles, **ending with the candle still forming** (its close is its first quote) | the newest 200 and 48 **completed** candles |
 | multiple-hma | at each 30-minute boundary: 60 signal candles and 210 4H candles, both **ending with the candle in progress** | completed 30-minute candles, and only 4H candles that had fully closed with no missing constituent |
 | hma | completed candles (`completed_closes`), with stale and missing candles skipped | completed candles |
@@ -182,12 +186,12 @@ EMA-HMA decisions differ.
 - **LIVE limits.** A LIVE run stops at `--max-orders` (default: one opening order
   per process), the other LIVE risk limits and its broker stop.
 - **Process startup.** moving-average waits until the price first crosses its
-  average. The first sma iteration repeats the newest buffered price, so for 21
-  minutes one price is counted twice.
+  average. (The sma artifact of the old rolling list, one price counted twice for
+  21 minutes, is gone: each boundary reads the broker's window.)
 - **Scheduling.** `--days 5` waits for the market to reopen; historical candles
   exist only while the market trades.
-- **Safety machinery.** Order confirmation, network pauses and other safety
-  controls differ by strategy; see
+- **Safety machinery.** Order confirmation, ownership, network pauses, stale-cycle
+  protection and shutdown are the shared online execution's; see
   [trading safety](trading-safety.md#safety-capabilities-by-strategy).
 
 ### 4. Periods fixed online are configurable in the backtest
@@ -278,5 +282,5 @@ explanatory `online_differences` section; it is not part of any hash.
 - The differences listed above (reversal semantics, startup artifacts,
   completed-candle timing) are modeling choices. Change them only together with
   their tests and the report warnings (`online_differences` on each adapter).
-- Follow-ups: #10 (explicit online reversals), #11 (completed candles online),
-  #9 (shared online execution and safety for the older strategies).
+- Follow-ups: #10 (explicit online reversals), #11 (completed candles online).
+  #9 (shared online execution) changed online behavior only, never a simulation.

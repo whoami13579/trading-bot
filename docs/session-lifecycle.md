@@ -22,11 +22,13 @@ the wait and history retrieval. Loading credentials from disk would not fix this
 ## Cycle boundary
 
 The shared factory verifies the initial account and pins its environment, exact base URL
-and account ID. HMA, EMA/HMA and Multiple HMA call `prepare_trading_cycle()` after the
-scheduler and any market-opening wait, before calculating signals. SMA calls it before
-each latest-price cycle; the moving-average strategy calls it before updating its buffer.
-The shared ping utility also uses this path once its account is pinned. During HMA-family
-scheduler waits, the scheduler invokes this read-only validation every five minutes.
+and account ID. Every order-capable strategy runs the
+[shared single-position execution](shared-execution.md), which calls
+`prepare_trading_cycle()` after the scheduler and any market-opening wait, before
+calculating signals (SMA and moving average previously called it at the start of their
+free-running 60-second loop). The shared ping utility also uses this path once its
+account is pinned. During every strategy's scheduler wait, the scheduler invokes this
+read-only validation every five minutes.
 Healthy sessions therefore keep their tokens and existing LIVE gate without re-login.
 The final cycle check remains necessary after suspension, long market-opening waits,
 revocation or an unexpected expiration.
@@ -48,8 +50,8 @@ and encryption-key requests do not extend this timer. At a cycle boundary:
 
 There is no automatic replay of history requests or trading mutations. A 401 received
 outside the cycle probe still stops the client. Transient *network* failures, as distinct
-from HTTP 401 expiry, are covered in [network recovery](network-recovery.md). HMA retries
-read-only GETs a bounded number of times and may pause and resume with a fresh,
+from HTTP 401 expiry, are covered in [network recovery](network-recovery.md). Every
+order-capable strategy retries read-only GETs a bounded number of times and may pause and resume with a fresh,
 re-verified DEMO client. The stopped client described here is never revived. This deliberately confines recovery to
 an operation with no execution outcome to reconcile. Failed renewal clears the tokens
 and disarms execution. Interrupted requests also invalidate the client and propagate the
@@ -80,7 +82,8 @@ changes only wake-up frequency, leaving candle resolution and HMA signals unchan
 Supported minute schedules are MINUTE, MINUTE_5, MINUTE_15 and MINUTE_30. The existing
 two-second post-boundary settling delay is retained.
 
-Verify the actual HMA loop without computing signals or submitting orders:
+Verify the actual scheduled loop without computing signals or submitting orders (every
+order-capable strategy accepts `--read-only`; HMA is shown):
 
 ```bash
 uv run tb-trade --strategy hma --read-only --schedule-time-frame MINUTE --cycles 3
@@ -89,7 +92,9 @@ uv run tb-trade --strategy hma --read-only --schedule-time-frame MINUTE --cycles
 
 This checks three scheduled boundaries using the normal MINUTE_30 history. `--read-only`
 is a DEMO-only diagnostic mode and rejects LIVE flags before authentication. It does not
-call any indicator/signal function or any position/order mutation. Authentication failures
+call any indicator/signal function, read positions or send any order; the client also
+refuses every mutation request in this mode (`TradingApi.forbid_mutations`), including
+after a network recovery. Authentication failures
 stop immediately; malformed read-only results also exit with a fixed failure message.
 `--cycles` bounds the number of scheduled attempts. Omitting `--read-only` runs the normal
 order-capable strategy, so retain it when checking authentication alone.
