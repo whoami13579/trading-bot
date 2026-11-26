@@ -37,8 +37,10 @@ never through a registry flag alone.
 A backtest reproduces each strategy's **signal rule**, not necessarily its online
 candle timing, order execution or LIVE limits. Every backtest report of an
 order-capable strategy lists the differences (`online_differences`); details are in
-[strategy backtesting](strategy-backtesting.md#what-equivalent-means-here). Online
-safety controls also differ between strategies
+[strategy backtesting](strategy-backtesting.md#what-equivalent-means-here). Online,
+every order-capable strategy runs the
+[shared single-position execution](shared-execution.md); their signal inputs and
+decisions still differ
 ([comparison](trading-safety.md#safety-capabilities-by-strategy)).
 
 ## Command reference
@@ -49,7 +51,7 @@ safety controls also differ between strategies
 | --- | --- | --- |
 | `tb-trade --strategy NAME` | Unified DEMO/LIVE strategy runner | **Order-capable** (DEMO by default) |
 | `tb-trade --strategy NAME --REAL` | Same strategy on LIVE | **Real-money orders**, behind the LIVE gate |
-| `tb-trade --strategy hma --read-only` | HMA DEMO session/history diagnostics | DEMO reads, no orders |
+| `tb-trade --strategy NAME --read-only` | DEMO session/history diagnostics of any order-capable strategy | DEMO reads, no orders (the client refuses mutations) |
 | `tb-backtest --strategy NAME` | Historical simulation of any registered strategy | None |
 | `tb-check-offline` | Full offline test suite under network/credential guards | None |
 | `tb-check-environment` | Offline environment, dependency and help-path checks | None |
@@ -87,6 +89,7 @@ uv run tb-trade --strategy hma --REAL                           # LIVE (real mon
 uv run tb-trade --strategy hma --symbol EURUSD --size 100 --time-frame MINUTE_5
 uv run tb-trade --strategy ema-hma --long_period 100 --time_frame MINUTE_15
 uv run tb-trade --strategy hma --read-only --cycles 1           # DEMO diagnostics, no orders
+uv run tb-trade --strategy sma --read-only --cycles 2           # the same for any strategy
 ```
 
 Rules:
@@ -134,7 +137,7 @@ The LIVE contract mapping remains **EURUSD, size 100, USD accounts**. See
 | --- | --- | --- | --- |
 | Command options | `--strategy`, `--list-strategies`, `--help` | own | own |
 | Shared by both commands, every strategy | `--symbol`, `--size` (grid: `--level-size`) | forwarded | yes |
-| Trading only | `--REAL`/`--real`, `--account`, LIVE limits, `--fee-profile`, hma `--read-only`, `--cycles`, network options, `--days` | forwarded to the strategy's parser | refused (exit 2) |
+| Trading only | `--REAL`/`--real`, `--account`, LIVE limits, `--fee-profile`, `--read-only`, `--cycles`, network options (all order-capable strategies); `--days`, hma `--schedule-time-frame`, multiple-hma `--short_term` | forwarded to the strategy's parser | refused (exit 2) |
 | Backtesting only | `--start`, `--end`, `--data-source`, `--initial-balance`, cost options, `--execution-model`, `--snapshot`, `--average-period`, `--fast-period`, … | refused (exit 2) | yes |
 | Strategy-specific, in both commands | hma `--hma-period`/`--hma_period`, `--direction`, `--time-frame`/`--time_frame`; ema-hma `--long_period`, `--short_period`, `--hma_period`, `--time_frame`; multiple-hma `--hma_period`, `--long_term` | forwarded for that strategy only | for that strategy only |
 
@@ -147,14 +150,23 @@ tb-backtest option must be rejected by that parser or refused by tb-trade.
 
 | Strategy | Options (defaults) |
 | --- | --- |
-| `moving-average` | none; 1-minute candles, 20-price average, 60 s loop |
-| `sma` | none; 1-minute candles, SMA 9/21, 60 s loop |
-| `hma` | `--hma-period`/`--hma_period` (16), `--time-frame`/`--time_frame` (`MINUTE_30`), `--schedule-time-frame`, `--direction` (`BUY`), `--days` (7; 5 waits for market open), `--cycles`, `--read-only`, and the [network recovery](network-recovery.md) options |
-| `ema-hma` | `--long_period` (200), `--short_period` (20), `--hma_period` (16), `--time_frame` (`MINUTE_5`), `--days` (7) |
-| `multiple-hma` | `--long_term` (`HOUR_4`), `--short_term` (`MINUTE_30`), `--hma_period` (20), `--days` (5) |
+| `moving-average` | none; newest 20 one-minute ask opens, decided at each one-minute boundary |
+| `sma` | none; newest 21 one-minute ask opens, SMA 9/21, decided at each one-minute boundary |
+| `hma` | `--hma-period`/`--hma_period` (16), `--time-frame`/`--time_frame` (`MINUTE_30`), `--schedule-time-frame`, `--direction` (`BUY`), `--days` (7; 5 waits for market open) |
+| `ema-hma` | `--long_period` (200), `--short_period` (20), `--hma_period` (16), `--time_frame` (`MINUTE_5`; one of `MINUTE`, `MINUTE_5`, `MINUTE_15`, `MINUTE_30`), `--days` (7) |
+| `multiple-hma` | `--long_term` (`HOUR_4`), `--short_term` (`MINUTE_30`; a schedule timeframe), `--hma_period` (20), `--days` (5) |
+
+Every order-capable strategy also accepts the shared execution options:
+`--read-only` (DEMO only), `--cycles N`, and the [network recovery](network-recovery.md)
+options (`--network-retries`, `--network-retry-delay`, `--network-retry-max-delay`,
+`--network-retry-jitter`, `--recovery-interval`, `--max-outage`,
+`--max-signal-delay`, `--no-network-recovery`). They are validated before any
+credential is read. See [shared execution](shared-execution.md#command-line-options).
 
 The spellings are unchanged from the original commands. `ema-hma` and
-`multiple-hma` accept only the underscore forms, as before.
+`multiple-hma` accept only the underscore forms, as before. An unsupported
+ema-hma `--time_frame` or multiple-hma `--short_term` is now rejected before
+authentication (it previously failed after login).
 
 ### `tb-backtest`
 

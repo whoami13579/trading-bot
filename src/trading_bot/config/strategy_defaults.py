@@ -15,7 +15,7 @@ MAX_LOSS = Decimal("2")  # Equity drawdown limit; entry-time checks, not guarant
 MAX_ORDERS = 1  # Opening orders per process; closing an owned position remains allowed.
 STOP_DISTANCE = Decimal("0.001")  # Price units; broker restrictions are always checked.
 
-# Network retry and recovery (HMA scheduled strategy). CLI overrides: see
+# Network retry and recovery (every scheduled strategy; execution/single_position.py). CLI overrides: see
 # add_network_arguments in trading_config.py and docs/network-recovery.md.
 # Retries apply only to read-only GET requests; trade-changing requests are never retried.
 NETWORK_RETRIES = 3  # Additional attempts per read after the first: delays near 2s, 4s, 8s.

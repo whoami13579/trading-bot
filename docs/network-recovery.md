@@ -1,4 +1,10 @@
-# Network retries, pause and recovery (HMA)
+# Network retries, pause and recovery
+
+Since issue #9 this applies to every order-capable strategy (moving-average, sma,
+hma, ema-hma, multiple-hma): they all run the
+[shared single-position execution](shared-execution.md), which uses the
+mechanisms described here unchanged. The history below was written for HMA, where
+they were first introduced.
 
 Before this change, a single transient DNS failure stopped the scheduled HMA strategy
 for good, for example on the cycle ping `GET /api/v1/ping` with
@@ -16,10 +22,10 @@ The fail-closed latch is intentionally unchanged. Instead:
    broker state before resuming. The stopped client is never revived.
 3. Missed candle boundaries are **skipped**, never replayed.
 
-This applies to `tb-trade --strategy hma` (and the legacy `hma.py` /
-`trading-bot-hma`, which run the same code), including `--read-only`. SMA, EMA/HMA,
-Multiple HMA, Moving Average and the diagnostic/integration tools keep their existing
-single-attempt, fail-closed behavior.
+This applies to `tb-trade --strategy KEY` for every order-capable strategy (and the
+legacy commands, which run the same code), including `--read-only`. The
+diagnostic/integration tools keep their existing single-attempt, fail-closed
+behavior.
 
 ## 1. Read-only request retries
 
@@ -280,11 +286,13 @@ own handlers.
   order: a signal, any stop, and also a normal `--cycles` completion. An order sent in
   the final cycle has had no wait in which to be confirmed, so it is always reported.
 * **Restart after a network stop** (for example `--max-outage` reached, or recovery
-  disabled): restarting is safe once connectivity is back. HMA reads broker positions
-  every cycle and opens a position only when none exists for the symbol.
+  disabled): the strategy reads broker positions every cycle and opens a position only
+  when none exists for the symbol. A restarted DEMO process owns nothing (ownership is
+  kept in memory), so a position left by the stopped run is never adopted or closed and
+  blocks entries until it is closed or managed on Capital.com.
 * **Restart after an uncertain order outcome:** first check Capital.com for positions and
   working orders on the symbol, and confirm whether the last open/close took effect.
-  The same applies after an `order_confirmation_*` stop. DEMO HMA has no durable journal,
+  The same applies after an `order_confirmation_*` stop. DEMO strategies have no durable journal,
   so a restart remembers neither the uncertainty nor any pending confirmation. LIVE
   restart is blocked by the gate's journal until it is reconciled; never clear that state
   just to retry an order.
@@ -324,7 +332,8 @@ HMA loop against a stateful offline broker on a deterministic clock. It covers:
   `--max-signal-delay` (no POST or DELETE)
 * skipped and stale boundaries
 * stale, incomplete and gapped candles, with and without `--schedule-time-frame`
-* freshness between closes in a batch
+* freshness immediately before a close (one owned position; there is no batch since
+  issue #9)
 * the `--max-outage` deadline
 * recovery across midnight
 * shutdown during recovery
@@ -340,9 +349,10 @@ calculated, no orders were sent and no LIVE request was made.
 
 ## 10. Limitations
 
-* Only HMA uses pause/resume. The other strategies keep the previous fail-closed behavior.
+* Every order-capable strategy uses pause/resume (issue #9). EMA-HMA, Multiple-HMA,
+  SMA and moving average previously stopped on any outage.
 * LIVE never auto-resumes (by design, see §5).
-* DEMO HMA keeps no durable journal. Unconfirmed orders are tracked across client
+* DEMO strategies keep no durable journal. Unconfirmed orders are tracked across client
   replacement and reconnection, but only in memory: **not across a process restart**. An
   uncertain or unresolved outcome stops the process, and a manual restart relies on the
   operator's reconciliation.
@@ -365,9 +375,10 @@ calculated, no orders were sent and no LIVE request was made.
   `/confirms` response shape, not against real DEMO orders.
 * Candle freshness requires the broker's candle for the expected period. A quiet market
   that publishes no candle for a period, or the market being closed, skips the cycle.
-  The signal now uses completed candles only; previously the still-forming candle was
-  included.
-* A second HMA process on the same DEMO account is not prevented. The LIVE gate's account
-  lock still applies to LIVE.
+  HMA's signal uses completed candles only; EMA-HMA and Multiple-HMA still read the
+  newest candles, including the forming one (issue #11).
+* A second strategy process on the same DEMO account is not prevented. It cannot close
+  the first one's position (ownership), but each blocks the other's entries on the same
+  instrument. The LIVE gate's account lock still applies to LIVE.
 * The scheduler still uses local wall-clock minutes. Around a DST fall-back, the repeated
   local hour's boundaries are rejected as already executed rather than run twice.

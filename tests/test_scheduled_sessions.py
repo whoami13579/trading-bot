@@ -204,9 +204,11 @@ class ScheduledStrategyTests(unittest.TestCase):
         events = []
         api.prepare_trading_cycle.side_effect = lambda: events.append("session")
         api.getHistoricalPrices.side_effect = lambda *args: (
-            events.append("history") or {"prices": [{"openPrice": {"ask": 2}}]},
+            events.append("history")
+            or {"prices": [{"openPrice": {"ask": float(i)}} for i in range(21)]},
             200,
         )
+        api.getAllPositionsList.return_value = []
         api.createPosition.side_effect = lambda *args: (
             events.append("order") or {},
             200,
@@ -214,24 +216,30 @@ class ScheduledStrategyTests(unittest.TestCase):
         with (
             patch("sys.argv", ["sma.py"]),
             patch.object(sma, "create_trading_api", return_value=api),
-            patch.object(sma, "get_buffer_prices", return_value=[1] * 21),
-            patch.object(sma.time, "sleep", side_effect=EndCycle()),
+            patch.object(sma, "wait_until_targets", side_effect=[None, EndCycle()]),
             redirect_stdout(io.StringIO()),
             self.assertRaises(EndCycle),
         ):
             sma.main()
         self.assertEqual(events, ["session", "history", "order"])
 
-    def test_moving_average_failure_preserves_buffer_and_skips_history(self):
-        prices = [1, 2, 3]
+    def test_moving_average_renewal_failure_stops_before_history_or_order(self):
+        # Shared execution (issue #9): the session is validated at each boundary before
+        # any history read; a renewal failure is not a network outage and stops.
         api = Mock()
         api.prepare_trading_cycle.side_effect = TradingUnavailable(
             "session_renewal_failed"
         )
-        with self.assertRaises(TradingUnavailable):
-            moving_average.update_prices(prices, api)
-        self.assertEqual(prices, [1, 2, 3])
+        with (
+            patch("sys.argv", ["main.py"]),
+            patch.object(moving_average, "create_trading_api", return_value=api),
+            patch.object(moving_average, "wait_until_targets"),
+            redirect_stdout(io.StringIO()),
+            self.assertRaises(TradingUnavailable),
+        ):
+            moving_average.main()
         api.getHistoricalPrices.assert_not_called()
+        api.createPosition.assert_not_called()
 
 
 class SchedulerTests(unittest.TestCase):

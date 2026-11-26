@@ -52,14 +52,20 @@ is planned in #12 and #13 and is not implemented.
 The backtests reuse each online strategy's **signal rule** and defaults, but not
 necessarily its online candle timing, order execution or LIVE limits:
 
-- moving-average and sma simulate stop-and-reverse, while online they send an
-  opposite order without closing;
+- moving-average and sma simulate stop-and-reverse, while online the first
+  reversal stops trading with the owned position open (no opposite order is
+  sent; confirmed reversals are #10);
 - ema-hma and multiple-hma use completed candles, while online they read the
-  forming candle.
+  forming candle (#11).
 
-Every affected report states these differences. Online safety controls also
-differ between strategies; only HMA has confirmation tracking and network
-recovery. See [strategy backtesting](docs/strategy-backtesting.md) and the
+Every affected report states these differences. All five order-capable
+strategies share one online lifecycle, the
+[shared single-position execution](docs/shared-execution.md): candle-boundary
+scheduling, stale-signal protection, DEMO order confirmation, broker-confirmed
+ownership (only positions the process opened are closed), DEMO network
+pause/resume, graceful shutdown and the LIVE gate. Offline tests are not a DEMO
+validation: see the [DEMO validation plan](docs/demo-validation-plan.md). See
+[strategy backtesting](docs/strategy-backtesting.md) and the
 [safety comparison](docs/trading-safety.md#safety-capabilities-by-strategy). Each strategy is implemented once under
 `src/trading_bot/strategies/` and declared once in
 `src/trading_bot/strategies/registry.py`. The [CLI guide](docs/cli.md) covers
@@ -114,7 +120,7 @@ in the repository root.
 | Strategy list / help | `uv run tb-trade --list-strategies`, `uv run tb-trade --strategy hma --help` | `uv run trading-bot-hma --help` |
 | DEMO strategy | `uv run tb-trade --strategy hma` | `uv run trading-bot-hma`, `uv run hma.py` |
 | LIVE strategy | `uv run tb-trade --strategy hma --REAL` | `uv run trading-bot-hma --REAL`, `uv run hma.py --REAL` |
-| HMA DEMO read-only diagnostics | `uv run tb-trade --strategy hma --read-only --cycles 1` | `uv run hma.py --read-only --cycles 1` |
+| DEMO read-only strategy diagnostics (any order-capable strategy) | `uv run tb-trade --strategy hma --read-only --cycles 1` | `uv run hma.py --read-only --cycles 1` |
 | DEMO read-only preflight | `uv run tb-demo-roundtrip --read-only` | `uv run scripts/demo_roundtrip.py --read-only`, `uv run test_api_key.py --read-only` |
 | LIVE read-only preflight | `uv run tb-live-preflight --REAL` | `uv run scripts/live_preflight.py --REAL`, `uv run test_live_api.py --REAL` |
 | Historical simulation, no broker access | `uv run tb-backtest --strategy NAME` (any strategy) | `trading-bot-backtest`, `uv run hma.py --backtest`, `uv run src/trading_bot/strategies/donchian.py --backtest`, `uv run scripts/backtest.py` |

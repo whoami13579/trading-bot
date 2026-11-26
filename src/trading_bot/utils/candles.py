@@ -65,3 +65,29 @@ def completed_closes(payload, timeframe: str, boundary: datetime):
     if latest is None or latest + step <= boundary - step:
         return _skip("expected_candle_missing", timeframe, boundary, latest)
     return [close for _, close in completed]
+
+
+def newest_opens(payload, count: int):
+    """Ask opens of the newest ``count`` broker candles, or None to skip the cycle.
+
+    This is the moving-average/SMA input policy, unchanged by the shared execution
+    (issue #9): the window ends with the candle that has just started, whose open is a
+    known price. It is not a completed-candle selection. Malformed or short history
+    skips the cycle instead of deciding on fewer prices.
+    """
+    try:
+        rows = payload["prices"]
+        if not isinstance(rows, list):
+            raise TypeError
+        opens = [row["openPrice"]["ask"] for row in rows[-count:]]
+    except (KeyError, TypeError, AttributeError):
+        _LOGGER.warning("Scheduled cycle skipped reason=invalid_candle_data; no signal or order")
+        return None
+    if len(opens) < count or not all(
+        isinstance(price, (int, float)) and not isinstance(price, bool) and math.isfinite(price)
+        for price in opens
+    ):
+        _LOGGER.warning("Scheduled cycle skipped reason=insufficient_candle_data candles=%d "
+                        "required=%d; no signal or order", len(opens), count)
+        return None
+    return opens

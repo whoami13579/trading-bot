@@ -580,3 +580,54 @@ Offline tests: 719 before the corrections, 731 after (12 new in
 corrected behavior).
 
 Planned online support for the simulation-only strategies: Donchian #12, Grid #13.
+
+## Issue #9: shared single-position online execution
+
+All five order-capable strategies now run one online lifecycle,
+`src/trading_bot/execution/single_position.py`, described in
+[shared execution](shared-execution.md). It reuses `wait_until_targets`,
+`CycleGuard`, `PendingOrders`, `NetworkSupervisor`, `GracefulShutdown` and the LIVE
+gate; nothing was copied into the strategy modules, which now hold only options,
+defaults, signal inputs and pure decisions. Changes to existing components:
+`PendingOrders(on_reconciled=...)` records ownership from confirmations;
+`TradingApi.forbid_mutations()` backs `--read-only` and survives recovery;
+`trading_config.add_execution_arguments`/`check_execution_arguments` share the
+options; `signals.configured_side_target` is the HMA rule shared with its backtest.
+
+Explicit online behavior changes:
+
+| Change | Strategies | Why |
+| --- | --- | --- |
+| DEMO closes only the position the process opened (confirmed by the broker); unowned positions are never closed or adopted and block entries | hma, ema-hma, multiple-hma (closed every position on the instrument); all | Issue #9 ownership |
+| A reversal stops trading (`reversal_requires_confirmed_close`); no opposite market order | sma, moving-average | Minimum safety change; confirmed reversals are #10 |
+| One-minute UTC boundary scheduling; the window is rebuilt from the broker each boundary | sma, moving-average (drifting `sleep(60)`, rolling list) | Shared scheduling |
+| DEMO confirmation tracking, stale-cycle skips, DEMO pause/resume, deferred shutdown, `--read-only`, `--cycles`, network options | ema-hma, multiple-hma, sma, moving-average (HMA had them) | Shared lifecycle |
+| Unexpected order status or exception stops as uncertain | all (non-200 used to print and continue) | No untracked orders |
+| LIVE owned position no longer listed stops at once | all (previously stopped at the next entry) | Accurate stop reason |
+| Unsupported ema-hma `--time_frame` / multiple-hma `--short_term` rejected before login | ema-hma, multiple-hma | Fail before authentication |
+
+Unchanged: every signal rule, period, timeframe, default and option spelling;
+EMA-HMA/Multiple-HMA forming-candle inputs (#11); the moving-average startup wait;
+the LIVE gate and every risk limit; retry and recovery policies; every backtest.
+
+Tests changed to the new behavior, each with the same intent: six HMA recovery
+scenarios now open their own position before closing it (they injected a position
+the run never opened); `ReversalExecutionTests` pins the refused reversal on netting
+and hedging DEMO accounts and in LIVE instead of the opposite-order outcomes; the
+sma/moving-average loop tests drive the scheduler instead of `time.sleep`; the
+`update_prices` buffer test became a renewal-failure test of the shared loop;
+`FakeBroker` serves per-order deal references and confirmations. New:
+`tests/test_single_position_execution.py`, `tests/test_strategy_migrations.py`,
+`tests/test_shared_execution_safety.py`.
+
+Backtest regression: the seven strategies were run on cached real data
+(moving-average and sma 2026-10-13..2026-10-31, hma/ema-hma/multiple-hma
+2026-10-13..2026-11-10, donchian default study run, grid on the study snapshot
+2024-01-02..2024-04-01) from `origin/master` and from this branch, with sockets
+blocked. `trades.csv`, `trade_details.csv`, `equity.csv` and `grid_orders.csv`
+are byte-identical; `report.json` differs only in `data.cache_hit` and, for
+moving-average and sma, the `online_differences` warning text.
+
+Offline tests: 731 before issue #9, 806 after. No DEMO or LIVE order was sent and
+no Capital.com session was opened for this change; the
+[DEMO validation plan](demo-validation-plan.md) is prepared but not executed.

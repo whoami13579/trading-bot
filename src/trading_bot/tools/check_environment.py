@@ -96,13 +96,15 @@ def main(argv=None):
         assert timeframe_to_minutes("MINUTE_15") == [0, 15, 30, 45]
         print("PASS: indicator and scheduling smoke checks using synthetic data")
 
-        from trading_bot.strategies.sma import get_buffer_prices
+        from trading_bot.utils.candles import newest_opens
         from trading_bot.tools.backtest import TestStrategy
         from unittest.mock import Mock
 
         api = Mock()
         api.getHistoricalPrices.return_value = ({"prices": [{"openPrice": {"ask": 10.0}}]}, 200)
-        assert get_buffer_prices(api, 1) == [10.0]
+        # The moving-average/sma reader of the shared execution (formerly sma.get_buffer_prices).
+        history, _ = api.getHistoricalPrices("EURUSD", "MINUTE", 1)
+        assert newest_opens(history, 1) == [10.0]
         assert TestStrategy(api).get_price(1) == [10.0]
         print("PASS: legacy historical-price readers handle (payload, status) using a fake API")
 

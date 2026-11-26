@@ -1,92 +1,80 @@
+"""sma: SMA 9 / SMA 21 crossover of one-minute ask opens.
+
+Online execution is the shared single-position engine
+(``trading_bot.execution.single_position``). This module supplies the signal input
+(the newest 21 broker candles' ask opens, unchanged) and the pure decision shared
+with the backtest (``signals.reversal_target`` over ``signals.sma_side``).
+
+The decision is stop-and-reverse: BUY while SMA(fast) is above SMA(slow), SELL
+while below. The shared engine never sends an opposite order over an open
+position, so the first reversal stops trading with the owned position left open
+until issue #10 adds a confirmed close-then-open.
+"""
+
 import argparse
-import time
-from trading_bot.api.client import TradingApi
-from trading_bot.config.trading_config import add_trading_arguments, create_trading_api
+
+from trading_bot.config.trading_config import (
+    add_execution_arguments,
+    add_trading_arguments,
+    check_execution_arguments,
+    create_trading_api,
+    network_policies,
+)
+from trading_bot.strategies.indicators import calculate_sma
 from trading_bot.strategies.signals import (
     POLLING_TIME_FRAME,
     SMA_FAST_PERIOD,
     SMA_SLOW_PERIOD,
-    price_side,
+    reversal_target,
+    sma_side,
 )
+from trading_bot.utils.scheduler import timeframe_to_minutes, wait_until_targets
 
 # Configuration Constants
 SYMBOL = "EURUSD"
 FAST_PERIOD = SMA_FAST_PERIOD
 SLOW_PERIOD = SMA_SLOW_PERIOD
 QUANTITY = 100
-SLEEP_TIME = 60
 
-def get_buffer_prices(tradingApi, count, symbol=SYMBOL):
-    """Fetches initial historical data to populate the moving averages."""
-    try:
-        result, _ = tradingApi.getHistoricalPrices(symbol, POLLING_TIME_FRAME, count)
-        return [item['openPrice']['ask'] for item in result['prices']]
-    except Exception as e:
-        print(f"Error initializing prices: {e}")
-        return []
 
-def calculate_sma(prices, period):
-    """Calculates Simple Moving Average for a specific window."""
-    return sum(prices[-period:]) / period
+def target(prices, position):
+    """The backtest rule: the side of SMA(fast) against SMA(slow); equal values hold."""
+    from trading_bot.execution.single_position import HOLD
+
+    return reversal_target(sma_side(prices, FAST_PERIOD, SLOW_PERIOD), position) or HOLD
+
 
 def main():
     parser = argparse.ArgumentParser()
     add_trading_arguments(parser)
+    add_execution_arguments(parser)
     args = parser.parse_args()
-    SYMBOL, QUANTITY = args.symbol, args.size
-    # 1. Environment Setup
-    tradingApi = create_trading_api(args, symbol=SYMBOL, size=QUANTITY)
+    check_execution_arguments(parser, args)
+    network_policies(args)  # Validated before authentication.
+    symbol, size = args.symbol, args.size
 
-    # 2. Initial Data Load
-    # We need at least SLOW_PERIOD prices to start calculating averages
-    prices = get_buffer_prices(tradingApi, SLOW_PERIOD, SYMBOL)
-    current_status = None # Tracks if we are currently "BUY" or "SELL"
+    from trading_bot.execution.single_position import SinglePositionStrategy, run
+    from trading_bot.utils.candles import newest_opens
 
-    print(f"Bot Started. Initial Prices: {prices[-5:]}")
+    def signal(api, boundary):
+        history, _ = api.getHistoricalPrices(symbol, POLLING_TIME_FRAME, SLOW_PERIOD)
+        prices = newest_opens(history, SLOW_PERIOD)
+        if prices is not None:
+            print(f"Price: {prices[-1]:.5f} | Fast: {calculate_sma(prices, FAST_PERIOD):.5f} | "
+                  f"Slow: {calculate_sma(prices, SLOW_PERIOD):.5f}")
+        return prices
 
-    # 3. Main Loop
-    while True:
-        try:
-            tradingApi.prepare_trading_cycle()
-            # Fetch latest single price
-            result, _ = tradingApi.getHistoricalPrices(SYMBOL, POLLING_TIME_FRAME, 1)
-            new_price = result['prices'][0]['openPrice']['ask']
+    strategy = SinglePositionStrategy(
+        key="sma", symbol=symbol, size=size,
+        schedule=timeframe_to_minutes(POLLING_TIME_FRAME),
+        signal=signal, target=target,
+        probes=((POLLING_TIME_FRAME, SLOW_PERIOD),),
+    )
+    # Module-level names are resolved at call time, so they remain patch points.
+    run(strategy, args,
+        connect=lambda **options: create_trading_api(args, symbol=symbol, size=size, **options),
+        wait=lambda *targets, **options: wait_until_targets(*targets, **options))
 
-            # Update price list (Rolling window)
-            prices.pop(0)
-            prices.append(new_price)
-
-            # Calculate Averages
-            fast_sma = calculate_sma(prices, FAST_PERIOD)
-            slow_sma = calculate_sma(prices, SLOW_PERIOD)
-
-            print(f"Price: {new_price:.5f} | Fast: {fast_sma:.5f} | Slow: {slow_sma:.5f}")
-
-            # 4. Strategy Logic: Crossover (shared with the backtest)
-            side = price_side(fast_sma, slow_sma)
-            # BUY if Fast crosses ABOVE Slow
-            if side == "BUY" and current_status != "BUY":
-                print(">>> TREND UP: Executing BUY")
-                # Note: You should call a 'closePosition' function here if your API requires it
-                res, code = tradingApi.createPosition(SYMBOL, "BUY", QUANTITY)
-                if code == 200:
-                    current_status = "BUY"
-                else:
-                    print(f"Trade Failed: {res}")
-
-            # SELL if Fast crosses BELOW Slow
-            elif side == "SELL" and current_status != "SELL":
-                print(">>> TREND DOWN: Executing SELL")
-                res, code = tradingApi.createPosition(SYMBOL, "SELL", QUANTITY)
-                if code == 200:
-                    current_status = "SELL"
-                else:
-                    print(f"Trade Failed: {res}")
-
-        except Exception as e:
-            print(f"Loop Error: {e}")
-
-        time.sleep(SLEEP_TIME)
 
 if __name__ == "__main__":
     main()

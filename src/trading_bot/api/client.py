@@ -75,6 +75,7 @@ class TradingApi(
         self._last_cycle_ping: dict | None = None
         self._read_retry_policy = None  # Opt-in; GET requests only.
         self._read_retry_deadline = None  # Optional monotonic bound on retry backoff.
+        self._mutations_forbidden = False  # Set by read-only diagnostics; never cleared.
         supplied = (x_cap_api_key, identifier, password)
         if all(value is None for value in supplied):
             values = load_credentials()
@@ -124,6 +125,13 @@ class TradingApi(
             raise TradingUnavailable(
                 self._unavailable, mutation=self._mutation_outcome_uncertain
             ) from None
+
+    def forbid_mutations(self) -> None:
+        """Refuse every trade-changing request from now on, before any transport.
+
+        Used by read-only diagnostics. Login stays possible; it cannot be undone.
+        """
+        self._mutations_forbidden = True
 
     def configure_read_retries(self, policy: RetryPolicy | None) -> None:
         """Enable bounded retries for read-only GETs; ``None`` restores single attempts.
@@ -219,6 +227,8 @@ class TradingApi(
         mutation = method.lower() != "get" and not (
             method.lower() == "post" and path == "/api/v1/session"
         )
+        if mutation and getattr(self, "_mutations_forbidden", False):
+            raise PermissionError("read_only_mode_forbids_mutations")
         if mutation and not (self.cst and self.x_security_token):
             self._stop("authentication_unavailable")
         if (

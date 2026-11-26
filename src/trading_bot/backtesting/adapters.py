@@ -100,16 +100,18 @@ LIVE_LIMITS = (
 REVERSAL = (
     "Execution differs from the online strategy: this simulation closes the position "
     "and opens the opposite side on each signal change (stop and reverse). Online, the "
-    "strategy sends one opposite market order without closing first. A netting DEMO "
-    "account then ends flat, a hedging DEMO account holds two offsetting positions, and "
-    "a LIVE run stops at that order (live_open_order_limit_reached). Only the signals "
-    "match. Reported exposure, executed legs, costs and P&L model the intended "
-    "stop-and-reverse, not any broker account."
+    "shared single-position execution never sends an opposite order over an open "
+    "position: at the first signal change after an entry it stops trading "
+    "(reversal_requires_confirmed_close) and leaves the owned position open, in DEMO "
+    "and LIVE, until a confirmed close-then-open exists (issue #10). Only the signals "
+    "match, and online only up to that first reversal. Reported exposure, executed "
+    "legs, costs and P&L model the intended stop-and-reverse, not any broker account."
 )
 POLLED_OPENS = (
-    "Signal timing: online polls every 60 s and reads the open of the candle that has "
-    "just started. This simulation reads the same opens of completed candles, decides "
-    "at the candle's close and fills at the next open, one candle later."
+    "Signal timing: online decides at each one-minute UTC boundary (plus about 2 s) and "
+    "reads the open of the candle that has just started. This simulation reads the same "
+    "opens of completed candles, decides at the candle's close and fills at the next "
+    "open, one candle later."
 )
 FORMING_CANDLES = (
     "Candle selection differs from the online strategy: online reads the newest broker "

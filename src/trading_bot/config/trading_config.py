@@ -125,6 +125,28 @@ def add_network_arguments(parser):
                        help="Stop on a network outage instead of pausing and resuming")
 
 
+def add_execution_arguments(parser):
+    """Options of the shared single-position execution (execution/single_position.py).
+
+    Every scheduled single-position strategy accepts these with the same meaning.
+    """
+    parser.add_argument("--read-only", action="store_true",
+                        help="DEMO session/history diagnostics; never calculates signals, reads "
+                             "positions or places orders")
+    parser.add_argument("--cycles", type=int, help="Stop after this many scheduled cycles")
+    add_network_arguments(parser)
+
+
+def check_execution_arguments(parser, args):
+    """Reject invalid shared execution options before credentials or authentication."""
+    if args.cycles is not None and args.cycles <= 0:
+        parser.error("--cycles must be positive")
+    if args.read_only and args.real:
+        parser.error("read-only diagnostics require DEMO; omit --REAL/--real")
+    if args.network_retry_max_delay < args.network_retry_delay:
+        parser.error("--network-retry-max-delay must be at least --network-retry-delay")
+
+
 def network_policies(args):
     """Build validated retry and recovery policies from add_network_arguments values."""
     from trading_bot.api.retry import RetryPolicy

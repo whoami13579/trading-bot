@@ -63,14 +63,20 @@ class StrategyEnvironmentTests(unittest.TestCase):
                 return {"prices": [{"openPrice": {"ask": float(i + 1)}} for i in range(count)]}, 200
             api.getHistoricalPrices.side_effect = history
             if name == "main":
-                api.getHistoricalPrices.side_effect = lambda symbol, timeframe, count: (
-                    {"prices": [{"openPrice": {"ask": 1 if count > 1 else 2}} for _ in range(count)]}, 200)
+                # A flat first window ends the moving-average startup wait; the next one rises.
+                windows = iter([1, 2])
+                api.getHistoricalPrices.side_effect = lambda symbol, timeframe, count, _n=windows: (
+                    {"prices": [{"openPrice": {"ask": 1}}] * (count - 1)
+                     + [{"openPrice": {"ask": next(_n)}}]}, 200)
             with self.subTest(strategy=name), ExitStack() as stack:
                 stack.enter_context(patch("sys.argv", [name + ".py", "--symbol", "AUDUSD", "--size", "200"]))
                 stack.enter_context(patch.object(module, "create_trading_api", return_value=api))
                 stack.enter_context(redirect_stdout(io.StringIO()))
-                if name in ("main", "sma"):
-                    stack.enter_context(patch.object(module.time, "sleep", side_effect=StartupReached))
+                if name == "main":
+                    stack.enter_context(patch.object(module, "wait_until_targets",
+                                                     side_effect=[None, None, StartupReached]))
+                if name == "sma":
+                    stack.enter_context(patch.object(module, "wait_until_targets", side_effect=[None, StartupReached]))
                 if name in ("hma", "multiple_hma", "ema_hma"):
                     stack.enter_context(patch.object(module, "wait_until_targets", side_effect=[None, StartupReached]))
                     stack.enter_context(patch.object(module, "calculate_hma_result", return_value="BUY"))

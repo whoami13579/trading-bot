@@ -53,7 +53,7 @@ class HmaStrategy:
 
     def target(self, candles):
         signal = hma_signal([float(c.prices.close) for c in candles], self.period)
-        return self.direction if signal == self.direction else None
+        return signals.configured_side_target(signal, self.direction)
 
 
 @dataclass(frozen=True)

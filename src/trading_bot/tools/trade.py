@@ -38,8 +38,9 @@ examples:
   tb-trade --strategy hma --REAL                       # LIVE, real money, guarded
 
 Every strategy run without --read-only is order-capable. DEMO is the default;
-LIVE requires --REAL or --real and passes the existing LIVE preflight. Safety
-controls differ between strategies: see docs/trading-safety.md.
+LIVE requires --REAL or --real and passes the existing LIVE preflight. All
+order-capable strategies share one online execution (docs/shared-execution.md);
+their signal inputs and decisions differ: see docs/trading-safety.md.
 """
 
 

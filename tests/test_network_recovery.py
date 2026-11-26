@@ -1478,6 +1478,21 @@ class HmaRecoveryScenarioTests(unittest.TestCase):
         """Boundaries whose candles were requested (each request starts a cycle)."""
         return [t.replace(second=0) for t in self.broker.times("get", "/api/v1/prices/EURUSD")]
 
+    def own_then_sell(self, on_close=None):
+        """The run opens, and so owns, the 22:00 BUY; the HMA turns to SELL right after it.
+
+        DEMO closes only positions the process opened (issue #9), so a close scenario
+        starts from the strategy's own confirmed position ``fixture-deal-private-1``.
+        ``on_close`` runs just before the broker serves that DELETE.
+        """
+        def hook(method, path):
+            if method == "post" and path == "/api/v1/positions":
+                self.broker.trend = -1
+            if method == "delete" and on_close is not None:
+                on_close()
+
+        self.broker.request_hook = hook
+
     def test_outage_beyond_retry_budget_pauses_recovers_reconciles_and_skips_missed_candles(self):
         self.broker.outages.append((self.at(22, 20), self.at(23, 10)))
         self.run_hma("--cycles", "3")
@@ -1514,11 +1529,33 @@ class HmaRecoveryScenarioTests(unittest.TestCase):
         self.assertIn("Broker state reconciled positions=1 symbol_positions=1", self.output)
         self.assertEqual(self.broker.count("post", "/api/v1/positions"), 0)
         self.assertEqual(self.executed(), [self.at(22, 30), self.at(23, 0)])
-        # A later SELL signal closes it exactly once through the normal strategy rule.
+        self.assertIn("Positions not owned by this process positions=1", self.output)
+        self.assertIn("Entry blocked reason=unowned_position_on_instrument", self.output)
+        # Issue #9: a later SELL signal never closes a position this process did not open
+        # (an earlier run's, a manual one or another strategy's).
         self.broker.trend = -1
         self.run_hma("--cycles", "1")
-        self.assertEqual(self.broker.count("delete", "/api/v1/positions/fixture-deal-private-0"), 1)
-        self.assertEqual(self.broker.positions, [])
+        self.assertEqual(sum(m == "delete" for m, _, _ in self.broker.calls), 0)
+        self.assertEqual(len(self.broker.positions), 1)
+
+    def test_demo_closes_only_the_position_this_run_opened(self):
+        manual = {"market": {"epic": "EURUSD"},
+                  "position": {"dealId": "fixture-manual-private", "direction": "BUY", "size": 100}}
+
+        def hook(method, path):
+            if method == "post" and path == "/api/v1/positions":
+                self.broker.trend = -1  # The 22:00 BUY is the run's own; 22:30 is SELL.
+            if method == "get" and path == "/api/v1/prices/EURUSD" and manual not in self.broker.positions \
+                    and self.clock.local() >= self.at(22, 30):
+                self.broker.positions.append(manual)  # Opened by hand on the same instrument.
+
+        self.broker.request_hook = hook
+        self.run_hma("--cycles", "3")
+        deletes = [p for m, p, _ in self.broker.calls if m == "delete"]
+        self.assertEqual(deletes, ["/api/v1/positions/fixture-deal-private-1"])
+        self.assertEqual(self.broker.positions, [manual])
+        self.assertEqual(self.broker.count("post", "/api/v1/positions"), 1)
+        self.assertIn("Positions not owned by this process positions=1", self.output)
 
     def test_ambiguous_order_submission_stops_without_resubmitting_or_recovering(self):
         for error in (requests.ReadTimeout("private-marker"), dns_error(), reset_error()):
@@ -1535,10 +1572,8 @@ class HmaRecoveryScenarioTests(unittest.TestCase):
                 self.assertNotIn("Trading paused", self.output)
 
     def test_ambiguous_close_stops_without_a_second_delete(self):
-        self.broker.trend = -1
-        self.broker.positions.append({"market": {"epic": "EURUSD"},
-                                      "position": {"dealId": "fixture-deal-private-0"}})
-        self.broker.failures[("delete", "/api/v1/positions/fixture-deal-private-0")].append(
+        self.own_then_sell()
+        self.broker.failures[("delete", "/api/v1/positions/fixture-deal-private-1")].append(
             requests.ReadTimeout("private-marker"))
         stopped = self.run_hma("--cycles", "3", expect=TradingUnavailable)
         self.assertTrue(stopped.outcome_uncertain)
@@ -1707,27 +1742,21 @@ class HmaRecoveryScenarioTests(unittest.TestCase):
         self.assertNotIn("Trading stopped", self.output)
 
     def test_acknowledged_close_still_listed_is_never_resent_across_an_outage(self):
-        self.broker.trend = -1
-        self.broker.positions.append({"market": {"epic": "EURUSD"},
-                                      "position": {"dealId": "fixture-deal-private-0"}})
-        self.broker.lag = True
-        self.broker.outages.append((self.at(22, 1), self.at(23, 10)))
-        stopped = self.run_hma("--cycles", "3", expect=TradingUnavailable)
+        self.own_then_sell(on_close=lambda: setattr(self.broker, "lag", True))
+        self.broker.outages.append((self.at(22, 31), self.at(23, 40)))
+        stopped = self.run_hma("--cycles", "4", expect=TradingUnavailable)
         self.assertEqual(stopped.reason, "order_confirmation_unresolved")
-        self.assertEqual(self.broker.count("delete", "/api/v1/positions/fixture-deal-private-0"), 1)
+        self.assertEqual(self.broker.count("delete", "/api/v1/positions/fixture-deal-private-1"), 1)
         self.assertEqual(len(self.broker.listed_positions()), 1)  # Still listed after the close.
-        delete = self.ack_time("delete", "/api/v1/positions/fixture-deal-private-0")
+        delete = self.ack_time("delete", "/api/v1/positions/fixture-deal-private-1")
         self.assertTrue(300 <= (self.clock.local() - delete).total_seconds() < 301)
         self.assertIn("Trading stopped reason=order_confirmation_unresolved operation=close", self.output)
 
     def test_close_confirmed_after_recovery_is_not_resent(self):
-        self.broker.trend = -1
-        self.broker.positions.append({"market": {"epic": "EURUSD"},
-                                      "position": {"dealId": "fixture-deal-private-0"}})
-        self.broker.lag = True
-        self.broker.release_at = self.at(22, 3)
-        self.broker.outages.append((self.at(22, 1), self.at(22, 3)))
-        self.run_hma("--cycles", "3")
+        self.own_then_sell(on_close=lambda: setattr(self.broker, "lag", True))
+        self.broker.release_at = self.at(22, 33)
+        self.broker.outages.append((self.at(22, 31), self.at(22, 33)))
+        self.run_hma("--cycles", "4")
         self.assertEqual(sum(m == "delete" for m, _, _ in self.broker.calls), 1)
         self.assertEqual(self.broker.positions, [])
         self.assertIn("Order confirmed operation=close", self.output)
@@ -1888,16 +1917,11 @@ class HmaRecoveryScenarioTests(unittest.TestCase):
         self.assertNotIn("outcome is uncertain", self.output)  # The BUY outcome itself is known.
 
     def test_deferred_sigterm_during_a_successful_close_records_the_acknowledgement(self):
-        self.broker.trend = -1
-        self.broker.positions.append({"market": {"epic": "EURUSD"},
-                                      "position": {"dealId": "fixture-deal-private-0"}})
-        self.broker.lag = True
+        def sigterm_during_close():
+            self.broker.lag = True
+            signal.raise_signal(signal.SIGTERM)
 
-        def sigterm_during_close(method, path):
-            if method == "delete":
-                signal.raise_signal(signal.SIGTERM)
-
-        self.broker.request_hook = sigterm_during_close
+        self.own_then_sell(on_close=sigterm_during_close)
         stopped = self.run_hma("--cycles", "3", expect=SystemExit)
         self.assertEqual(stopped.code, 143)
         self.assertEqual(sum(m == "delete" for m, _, _ in self.broker.calls), 1)
@@ -1982,30 +2006,31 @@ class HmaRecoveryScenarioTests(unittest.TestCase):
         self.assertIn("reason=expected_candle_missing", self.output)
         self.assertEqual(self.broker.count("post", "/api/v1/positions"), 0)
 
-    # --- Freshness inside a close batch (review finding 3) ---
+    # --- Freshness immediately before a close (review finding 3) ---
 
-    def test_batch_close_rechecks_freshness_before_each_close(self):
-        self.broker.trend = -1
-        for n in (0, 1):
-            self.broker.positions.append({"market": {"epic": "EURUSD"},
-                                          "position": {"dealId": f"fixture-deal-private-{n}"}})
-        state = {"listed": False}
+    def test_close_rechecks_freshness_immediately_before_the_order(self):
+        # Issue #9: one strategy-owned position, so there is no batch of closes; the
+        # positions read can still delay the close past --max-signal-delay.
+        for reached, closed in ((self.at(22, 31, 59), True), (self.at(22, 32, 1), False)):
+            with self.subTest(close_starts=reached.time().isoformat()):
+                self.setUp()
+                state = {"listed": False}
 
-        def timing(method, path):
-            if method == "get" and path == "/api/v1/positions" and not state["listed"] \
-                    and self.clock.local() >= self.at(22, 0):
-                state["listed"] = True  # The first close starts 119 s after the boundary...
-                self.clock.elapsed = (self.at(22, 1, 59) - self.START).total_seconds()
-            elif method == "delete":
-                self.clock.elapsed += 3  # ...and returns at 122 s, past the 120 s limit.
+                def timing(method, path, _reached=reached):
+                    if method == "post" and path == "/api/v1/positions":
+                        self.broker.trend = -1  # The 22:00 BUY is owned; 22:30 turns to SELL.
+                    if method == "get" and path == "/api/v1/positions" and not state["listed"] \
+                            and self.clock.local() >= self.at(22, 30):
+                        state["listed"] = True  # The strategy's positions read returns late.
+                        self.clock.elapsed = (_reached - self.START).total_seconds()
 
-        self.broker.request_hook = timing
-        self.run_hma("--cycles", "1", "--max-signal-delay", "120")
-        deletes = [(p, t) for m, p, t in self.broker.calls if m == "delete"]
-        self.assertEqual(deletes, [("/api/v1/positions/fixture-deal-private-0", self.at(22, 1, 59))])
-        self.assertEqual([p["position"]["dealId"] for p in self.broker.positions], ["fixture-deal-private-1"])
-        self.assertIn("reason=stale_boundary stage=order", self.output)
-        self.assertIn("Order confirmed operation=close", self.output)  # Reconciled before the check.
+                self.broker.request_hook = timing
+                self.run_hma("--cycles", "2", "--max-signal-delay", "120")
+                deletes = [(p, t) for m, p, t in self.broker.calls if m == "delete"]
+                self.assertEqual(deletes, [("/api/v1/positions/fixture-deal-private-1", reached)]
+                                 if closed else [])
+                self.assertEqual(len(self.broker.positions), 0 if closed else 1)
+                self.assertEqual("reason=stale_boundary stage=order" in self.output, not closed)
 
 
 class HmaLiveAndCliTests(unittest.TestCase):
