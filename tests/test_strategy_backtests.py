@@ -418,11 +418,17 @@ class MultiTimeframeTests(unittest.TestCase):
 
 
 class FakeBroker:
-    """Mocked online API serving prices as of a test-controlled clock. No network."""
+    """Mocked online API serving prices as of a test-controlled clock. No network.
+
+    Orders are accepted at once: each returns its own deal reference, whose broker
+    confirmation names the opened deal, as the shared execution's DEMO confirmation
+    lifecycle requires (issue #9).
+    """
 
     def __init__(self, frames, clock):
         self.frames, self.clock = frames, clock
         self.positions, self.orders, self.calls = [], [], 0
+        self.confirmations = {}
 
     def candles(self, timeframe, count):
         series = self.frames[timeframe](self.clock["k"])
@@ -443,18 +449,36 @@ class FakeBroker:
     def is_market_open(self):
         return True
 
+    def configure_read_retries(self, policy):
+        pass
+
     def getAllPositionsList(self):
         return list(self.positions)
 
+    def getAllPositions(self):
+        return {"positions": [{"market": {"epic": p.epic}, "position": {"dealId": p.dealId}}
+                              for p in self.positions]}, 200
+
+    def getPositionOrderConfirmation(self, reference):
+        return self.confirmations.get(reference)
+
+    def _reference(self, **confirmation):
+        reference = f"ref-{len(self.orders)}"
+        self.confirmations[reference] = {"dealReference": reference, "dealStatus": "ACCEPTED",
+                                         **confirmation}
+        return {"dealReference": reference}, 200
+
     def createPosition(self, symbol, direction, size):
         self.orders.append((self.calls, self.clock["k"], direction))
-        self.positions.append(Mock(epic=symbol, dealId=f"d{len(self.orders)}", direction=direction))
-        return {"dealReference": "ref"}, 200
+        deal = f"d{len(self.orders)}"
+        self.positions.append(Mock(epic=symbol, dealId=deal, direction=direction))
+        return self._reference(epic=symbol, direction=direction, size=size,
+                               affectedDeals=[{"dealId": deal, "status": "OPENED"}])
 
     def closePosition(self, deal_id):
         self.orders.append((self.calls, self.clock["k"], "CLOSE"))
         self.positions = [p for p in self.positions if p.dealId != deal_id]
-        return {"dealReference": "ref"}, 200
+        return self._reference(affectedDeals=[{"dealId": deal_id, "status": "FULLY_CLOSED"}])
 
     def side(self):
         return self.positions[0].direction if self.positions else None
@@ -503,39 +527,46 @@ class OnlineEquivalenceTests(unittest.TestCase):
         self.assertGreater(len(broker.orders), 3)
 
     def test_moving_average_loop_after_its_startup_wait(self):
+        """Shared execution (issue #9): every decision matches the backtest rule until the
+        first reversal, which stops trading instead of sending an opposite order (#10)."""
+        from trading_bot.execution.single_position import ExecutionHalted
+
         candles = consecutive(walk(160, 12), "MINUTE")
         clock = {"k": 19}
         broker = FakeBroker({"MINUTE": lambda k: candles[:k + 1]}, clock)
         seen = []
 
         def record(prices):
-            seen.append((list(prices), broker.side_status()))
+            seen.append((list(prices), broker.side()))
             return signals.moving_average_side(prices)
 
-        broker.status = None
-        broker.side_status = lambda: broker.status
-
-        def create(symbol, direction, size):
-            broker.status = direction
-            broker.orders.append((len(seen), clock["k"], direction))
-            return {}, 200
-
-        broker.createPosition = create
-
-        def sleep(_):
+        def wait(*args, **kwargs):
             clock["k"] += 1
             if clock["k"] >= len(candles):
                 raise StopLoop
 
-        self.drive("moving_average", broker, [], sleep, moving_average_side=record)
-        self.assertGreater(len(seen), 50)
+        module = importlib.import_module("trading_bot.strategies.moving_average")
+        with patch("sys.argv", ["moving_average"]), \
+                patch.object(module, "create_trading_api", return_value=broker), \
+                patch.object(module, "wait_until_targets", side_effect=wait), \
+                patch.object(module, "moving_average_side", side_effect=record), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), \
+                self.assertRaises(ExecutionHalted) as halted:
+            module.main()
+        self.assertEqual(halted.exception.reason, "reversal_requires_confirmed_close")
         strategy = MovingAverageStrategy()
-        statuses = [s for _, s in seen[1:]] + [broker.status]
-        for (prices, before), after in zip(seen, statuses):
+        statuses = [s for _, s in seen[1:]] + [broker.side()]
+        for (prices, before), after in zip(seen[:-1], statuses):
             window = consecutive([round(p / float(PIP)) for p in prices], "MINUTE")
             self.assertEqual(strategy.target(window, before), after)
-        # The online process placed no order before its first decision (startup wait).
-        self.assertGreater(len(broker.orders), 3)
+        # The last decision was the reversal the backtest makes; online it was refused.
+        prices, before = seen[-1]
+        window = consecutive([round(p / float(PIP)) for p in prices], "MINUTE")
+        self.assertNotIn(strategy.target(window, before), (before, None))
+        self.assertEqual([side for _, _, side in broker.orders], [before])  # One entry, no reversal.
+        self.assertGreater(len(seen), 3)
+        # The startup wait: the first windows decided nothing (no order before the crossing).
+        self.assertGreater(broker.orders[0][1], 20)
 
     def run_scheduled(self, module_name, frames, argv, cycles, first):
         clock = {"k": first - 1}

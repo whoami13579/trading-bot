@@ -222,16 +222,23 @@ class ScheduledStrategyTests(unittest.TestCase):
             sma.main()
         self.assertEqual(events, ["session", "history", "order"])
 
-    def test_moving_average_failure_preserves_buffer_and_skips_history(self):
-        prices = [1, 2, 3]
+    def test_moving_average_renewal_failure_stops_before_history_or_order(self):
+        # Shared execution (issue #9): the session is validated at each boundary before
+        # any history read; a renewal failure is not a network outage and stops.
         api = Mock()
         api.prepare_trading_cycle.side_effect = TradingUnavailable(
             "session_renewal_failed"
         )
-        with self.assertRaises(TradingUnavailable):
-            moving_average.update_prices(prices, api)
-        self.assertEqual(prices, [1, 2, 3])
+        with (
+            patch("sys.argv", ["main.py"]),
+            patch.object(moving_average, "create_trading_api", return_value=api),
+            patch.object(moving_average, "wait_until_targets"),
+            redirect_stdout(io.StringIO()),
+            self.assertRaises(TradingUnavailable),
+        ):
+            moving_average.main()
         api.getHistoricalPrices.assert_not_called()
+        api.createPosition.assert_not_called()
 
 
 class SchedulerTests(unittest.TestCase):
