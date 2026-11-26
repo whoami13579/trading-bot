@@ -15,7 +15,7 @@ from unittest.mock import Mock, patch
 from test_execution_assumptions import LiveGateCase
 from trading_bot.execution.single_position import ExecutionHalted
 from trading_bot.risk import live_execution
-from trading_bot.strategies import ema_hma, moving_average, registry, sma
+from trading_bot.strategies import ema_hma, moving_average, multiple_hma, registry, sma
 from trading_bot.api.models import TradingPosition
 from trading_bot.strategies.signals import price_average
 
@@ -63,7 +63,7 @@ def original_first_decision(windows):
 
 
 class CommonOptionTests(unittest.TestCase):
-    MIGRATED = ("moving_average", "sma", "ema_hma")
+    MIGRATED = ("moving_average", "sma", "ema_hma", "multiple_hma")
 
     def test_shared_options_are_validated_before_authentication(self):
         for name in self.MIGRATED:
@@ -310,6 +310,73 @@ class EmaHmaMigrationTests(AgreementStrategyTests):
 
     def test_live_entry_goes_through_the_gate(self):
         self.assert_gated(ema_hma, self.AGREE)
+
+
+class MultipleHmaMigrationTests(AgreementStrategyTests):
+    AGREE = {"calculate_multiple": Mock(return_value="BUY"),
+             "calculate_hma_result": Mock(return_value="BUY")}
+
+    def test_decision_is_the_backtest_agreement_rule(self):
+        self.assertEqual(multiple_hma.target(("BUY", "BUY"), None), "BUY")
+        self.assertEqual(multiple_hma.target(("Neutral", "BUY"), "BUY"), "FLAT")
+        self.assertEqual(multiple_hma.target(("SELL", "SELL"), "BUY"), "BUY")
+
+    def test_defaults_schedule_and_market_hours_are_unchanged(self):
+        api = Mock()
+        api.is_market_open.return_value = True
+        api.getHistoricalPrices.return_value = ({"prices": [{}] * 210}, 200)
+        raised, _, _ = run_main(multiple_hma, ["--read-only", "--cycles", "1"], api, [None])
+        self.assertIsNone(raised)
+        self.assertEqual([c.args for c in api.getHistoricalPrices.call_args_list],
+                         [("EURUSD", "HOUR_4", 210), ("EURUSD", "MINUTE_30", 60)])
+        api.is_market_open.assert_called_once_with()  # Five trading days by default.
+        with patch.object(multiple_hma, "wait_until_targets") as wait, \
+                patch.object(multiple_hma, "create_trading_api", return_value=api), \
+                patch("sys.argv", ["multiple_hma", "--read-only", "--cycles", "1"]), \
+                redirect_stdout(io.StringIO()):
+            multiple_hma.main()
+        self.assertEqual(wait.call_args.args, ([0, 30],))
+
+    def test_unsupported_schedule_timeframe_fails_before_authentication(self):
+        raised, factory, _ = run_main(multiple_hma, ["--short_term", "HOUR"], Mock(), [])
+        self.assertEqual(raised.code, 2)
+        factory.assert_not_called()
+
+    def test_long_term_vote_still_reads_the_newest_long_term_candles(self):
+        api = Mock()
+        api.getHistoricalPricesList.side_effect = lambda symbol, tf, count: [1.0] * count
+        api.getAllPositionsList.return_value = []
+        api.createPosition.return_value = ({"dealReference": "r1"}, 200)
+        raised, _, _ = run_main(multiple_hma, ["--cycles", "1", "--days", "7"], api, [None])
+        self.assertIsNone(raised)
+        self.assertEqual([c.args for c in api.getHistoricalPricesList.call_args_list],
+                         [("EURUSD", "HOUR_4", 210), ("EURUSD", "MINUTE_30", 60)])
+
+    def test_insufficient_long_term_history_makes_no_decision(self):
+        api = Mock()
+        api.getHistoricalPricesList.side_effect = lambda symbol, tf, count: [1.0] * 50
+        raised, _, out = run_main(multiple_hma, ["--cycles", "1", "--days", "7"], api, [None])
+        self.assertIsNone(raised)
+        self.assertIn("Error in main loop", out)  # As before: the cycle does nothing.
+        api.getAllPositionsList.assert_not_called()
+        api.createPosition.assert_not_called()
+
+    def test_disagreement_closes_only_owned_positions(self):
+        self.assert_owned_only(multiple_hma, {"calculate_multiple": Mock(return_value="Neutral"),
+                                              "calculate_hma_result": Mock(return_value="SELL")})
+        self.assert_owned_only(multiple_hma, self.AGREE)
+
+    def test_live_entry_goes_through_the_gate(self):
+        case = LiveGateCase("setUp")
+        case.setUp()
+        try:
+            case.api.is_market_open = Mock(return_value=True)
+            raised = gated_entry(case, multiple_hma, [], **self.AGREE)
+            self.assertIsNone(raised)
+            self.assertEqual([c.args[0] for c in case.send.call_args_list], ["post"])
+            self.assertEqual(list(case.gate.owned), ["owned"])
+        finally:
+            case.doCleanups()
 
 
 if __name__ == "__main__":
