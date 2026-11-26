@@ -76,7 +76,7 @@ class StrategyEnvironmentTests(unittest.TestCase):
                     stack.enter_context(patch.object(module, "wait_until_targets",
                                                      side_effect=[None, None, StartupReached]))
                 if name == "sma":
-                    stack.enter_context(patch.object(module.time, "sleep", side_effect=StartupReached))
+                    stack.enter_context(patch.object(module, "wait_until_targets", side_effect=[None, StartupReached]))
                 if name in ("hma", "multiple_hma", "ema_hma"):
                     stack.enter_context(patch.object(module, "wait_until_targets", side_effect=[None, StartupReached]))
                     stack.enter_context(patch.object(module, "calculate_hma_result", return_value="BUY"))

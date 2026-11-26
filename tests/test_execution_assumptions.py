@@ -22,6 +22,7 @@ from test_strategy_environments import StartupReached
 from trading_bot.backtesting import adapters, cli
 from trading_bot.backtesting.cli import SIMULATION_OPTIONS, option_names
 from trading_bot.backtesting.strategy import EmaHmaStrategy, MultipleHmaStrategy, SmaCrossoverStrategy
+from trading_bot.execution.single_position import ExecutionHalted
 from trading_bot.risk import live_execution
 from trading_bot.strategies import registry, signals
 from trading_bot.strategies.indicators import MULTIPLE_HISTORY
@@ -53,7 +54,8 @@ def flip_series():
 
 class Account(FakeBroker):
     """DEMO account in one position mode. Netting: an opposite same-size market order
-    closes the open position. Hedging: it opens a second, offsetting position."""
+    would close the open position. Hedging: it would open a second, offsetting one.
+    The shared execution never sends an opposite order over an open position."""
 
     def __init__(self, frames, clock, mode):
         super().__init__(frames, clock)
@@ -61,23 +63,31 @@ class Account(FakeBroker):
 
     def createPosition(self, symbol, direction, size):
         opposite = [p for p in self.positions if p.direction != direction]
+        self.orders.append((self.calls, self.clock["k"], direction))
         if self.mode == "netting" and opposite:
             self.positions.remove(opposite[0])
+            affected = [{"dealId": opposite[0].dealId, "status": "FULLY_CLOSED"}]
         else:
-            self.positions.append(Mock(epic=symbol, dealId=f"d{len(self.orders)}", direction=direction))
-        self.orders.append((self.calls, self.clock["k"], direction))
+            deal = f"d{len(self.orders)}"
+            self.positions.append(Mock(epic=symbol, dealId=deal, direction=direction))
+            affected = [{"dealId": deal, "status": "OPENED"}]
         net = sum(100 if p.direction == "BUY" else -100 for p in self.positions)
         self.exposure.append((net, len(self.positions)))
-        return {"dealReference": "ref"}, 200
+        return self._reference(epic=symbol, direction=direction, size=size, affectedDeals=affected)
 
 
 class ReversalExecutionTests(unittest.TestCase):
-    """Same signals, different positions: online orders versus simulated reversals."""
+    """Same signals, different positions: online execution versus simulated reversals.
+
+    Until issue #10 adds a confirmed close-then-open, the shared single-position
+    execution (issue #9) refuses a reversal and stops trading. It no longer sends the
+    opposite market order whose result depended on the account mode (PR #8 pinned
+    netting +100, 0, +100, 0 and hedging 1, 2, 3, 4 positions)."""
 
     def drive(self, broker, candles, clock):
         module = importlib.import_module("trading_bot.strategies.sma")
 
-        def sleep(_):
+        def wait(*args, **kwargs):
             clock["k"] += 1
             if clock["k"] >= len(candles):
                 raise StopLoop
@@ -85,67 +95,67 @@ class ReversalExecutionTests(unittest.TestCase):
         with ExitStack() as stack:
             stack.enter_context(patch("sys.argv", ["sma"]))
             stack.enter_context(patch.object(module, "create_trading_api", return_value=broker))
-            stack.enter_context(patch.object(module.time, "sleep", side_effect=sleep))
+            stack.enter_context(patch.object(module, "wait_until_targets", side_effect=wait))
             stack.enter_context(redirect_stdout(io.StringIO()))
-            with self.assertRaises(StopLoop):
+            stack.enter_context(redirect_stderr(io.StringIO()))
+            with self.assertRaises(ExecutionHalted) as halted:
                 module.main()
+        return halted.exception
 
-    def test_demo_account_modes_differ_from_the_simulated_reversals(self):
+    def test_demo_reversal_is_refused_on_netting_and_hedging_accounts(self):
         candles = flip_series()
         results = {}
         for mode in ("netting", "hedging"):
-            clock = {"k": 20}
+            clock = {"k": 19}
             broker = Account({"MINUTE": lambda k: candles[:k + 1]}, clock, mode)
-            self.drive(broker, candles, clock)
-            results[mode] = broker
-        netting, hedging = results["netting"], results["hedging"]
-        sides = [side for _, _, side in netting.orders]
-        # Identical online signals in both modes: alternating BUY/SELL orders.
-        self.assertEqual(sides, [side for _, _, side in hedging.orders])
-        self.assertEqual(sides, ["BUY", "SELL", "BUY", "SELL"])
-        # The backtest strategy reaches the same sides, as reversals.
+            halted = self.drive(broker, candles, clock)
+            self.assertEqual(halted.reason, "reversal_requires_confirmed_close")
+            results[mode] = (broker, clock["k"])
+        (netting, stop), (hedging, hedging_stop) = results["netting"], results["hedging"]
+        # Identical in both modes: one BUY, then the SELL reversal is refused.
+        self.assertEqual([side for _, _, side in netting.orders], ["BUY"])
+        self.assertEqual([side for _, _, side in hedging.orders], ["BUY"])
+        self.assertEqual(netting.exposure, [(100, 1)])
+        self.assertEqual(hedging.exposure, [(100, 1)])
+        self.assertEqual(stop, hedging_stop)
+        # The backtest still models the intended stop and reverse (unchanged).
         targets = [t for _, t in sequential_targets(SmaCrossoverStrategy(), candles)]
         changes = [t for a, t in zip([None] + targets, targets) if t != a]
-        self.assertEqual(changes, sides)
-        # Positions differ: simulation reverses long/short; the account does not.
-        simulated = [100 if side == "BUY" else -100 for side in changes]
-        self.assertEqual(simulated, [100, -100, 100, -100])
-        self.assertEqual([net for net, _ in netting.exposure], [100, 0, 100, 0])
-        self.assertEqual(hedging.exposure, [(100, 1), (0, 2), (100, 3), (0, 4)])
-        # Executed legs: one order per signal online, close + open per reversal simulated.
-        self.assertEqual(len(netting.orders), 4)
-        self.assertEqual(1 + 2 * (len(changes) - 1), 7)
+        self.assertEqual(changes, ["BUY", "SELL", "BUY", "SELL"])
+        self.assertEqual([100 if side == "BUY" else -100 for side in changes], [100, -100, 100, -100])
 
-    def test_live_gate_stops_the_process_at_the_first_opposite_order(self):
+    def test_live_reversal_is_refused_before_the_gate(self):
         case = LiveGateCase("setUp")
         case.setUp()
         try:
             gate, api = case.gate, case.api
             gate.arm()
             candles = flip_series()
-            clock = {"k": 20}
+            clock = {"k": 19}
             opens = [float(c.prices.open) for c in candles]
             api.getHistoricalPrices = Mock(side_effect=lambda symbol, tf, count: (
                 {"prices": [{"openPrice": {"ask": v}} for v in opens[:clock["k"] + 1][-count:]]}, 200))
             api.prepare_trading_cycle = Mock(return_value=False)
             module = importlib.import_module("trading_bot.strategies.sma")
 
-            def sleep(_):
+            def wait(*args, **kwargs):
                 clock["k"] += 1
                 if clock["k"] >= len(candles):
                     raise AssertionError("LIVE run should have stopped")
 
             with patch("sys.argv", ["sma", "--REAL"]), \
                     patch.object(module, "create_trading_api", return_value=api), \
-                    patch.object(module.time, "sleep", side_effect=sleep), \
-                    redirect_stdout(io.StringIO()), \
-                    self.assertRaises(live_execution.LiveSafetyStop) as stopped:
+                    patch.object(module, "wait_until_targets", side_effect=wait), \
+                    redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), \
+                    self.assertRaises(ExecutionHalted) as stopped:
                 module.main()
-            self.assertIn("live_open_order_limit_reached", str(stopped.exception))
-            # One opening POST was sent; the opposite order was never sent and the
-            # owned BUY position stays open with its broker stop.
+            self.assertEqual(stopped.exception.reason, "reversal_requires_confirmed_close")
+            # One opening POST through the gate; no opposite order and no close were sent,
+            # and the owned BUY position stays open with its broker stop.
             self.assertEqual([call.args[0] for call in case.send.call_args_list], ["post"])
             self.assertEqual([p["position"]["direction"] for p in case.positions], ["BUY"])
+            self.assertEqual(list(gate.owned), ["owned"])
+            self.assertFalse(gate.failed)
         finally:
             case.doCleanups()
 

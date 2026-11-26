@@ -204,9 +204,11 @@ class ScheduledStrategyTests(unittest.TestCase):
         events = []
         api.prepare_trading_cycle.side_effect = lambda: events.append("session")
         api.getHistoricalPrices.side_effect = lambda *args: (
-            events.append("history") or {"prices": [{"openPrice": {"ask": 2}}]},
+            events.append("history")
+            or {"prices": [{"openPrice": {"ask": float(i)}} for i in range(21)]},
             200,
         )
+        api.getAllPositionsList.return_value = []
         api.createPosition.side_effect = lambda *args: (
             events.append("order") or {},
             200,
@@ -214,8 +216,7 @@ class ScheduledStrategyTests(unittest.TestCase):
         with (
             patch("sys.argv", ["sma.py"]),
             patch.object(sma, "create_trading_api", return_value=api),
-            patch.object(sma, "get_buffer_prices", return_value=[1] * 21),
-            patch.object(sma.time, "sleep", side_effect=EndCycle()),
+            patch.object(sma, "wait_until_targets", side_effect=[None, EndCycle()]),
             redirect_stdout(io.StringIO()),
             self.assertRaises(EndCycle),
         ):

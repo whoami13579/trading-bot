@@ -501,30 +501,45 @@ class OnlineEquivalenceTests(unittest.TestCase):
                 module.main()
 
     def test_sma_loop(self):
-        candles = consecutive(walk(160, 11), "MINUTE")
-        clock = {"k": 20}
-        broker = FakeBroker({"MINUTE": lambda k: candles[:k + 1]}, clock)
+        """Shared execution (issue #9): each boundary's 21 newest opens decide as the
+        backtest does, until the first reversal stops trading (no opposite order, #10)."""
+        from trading_bot.execution.single_position import ExecutionHalted
 
-        def sleep(_):
+        candles = consecutive(walk(160, 11), "MINUTE")
+        clock = {"k": 19}
+        broker = FakeBroker({"MINUTE": lambda k: candles[:k + 1]}, clock)
+        seen = []
+
+        def record(prices, fast, slow):
+            seen.append((list(prices), broker.side()))
+            return signals.sma_side(prices, fast, slow)
+
+        def wait(*args, **kwargs):
             clock["k"] += 1
             if clock["k"] >= len(candles):
                 raise StopLoop
 
-        self.drive("sma", broker, [], sleep)
-        # Reconstruct the online rolling list: 21 buffered opens, then one per call.
-        appended = [float(c.prices.open) for c in candles[20:]]
-        buffered = [float(c.prices.open) for c in candles[:21]]
-        status, checked = None, 0
-        orders = {call: side for call, _, side in broker.orders}
+        module = importlib.import_module("trading_bot.strategies.sma")
+        with patch("sys.argv", ["sma"]), \
+                patch.object(module, "create_trading_api", return_value=broker), \
+                patch.object(module, "wait_until_targets", side_effect=wait), \
+                patch.object(module, "sma_side", side_effect=record), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()), \
+                self.assertRaises(ExecutionHalted) as halted:
+            module.main()
+        self.assertEqual(halted.exception.reason, "reversal_requires_confirmed_close")
         strategy = SmaCrossoverStrategy()
-        for call in range(2, broker.calls + 1):  # Call 1 filled the buffer.
-            prices = (buffered + appended[:call - 1])[-21:]
-            after = orders.get(call, status)
+        for (prices, before), (k, (_, after)) in zip(seen, enumerate(seen[1:] + [(None, broker.side())])):
+            # The window is exactly the 21 newest candle opens at that boundary.
+            self.assertEqual(prices, [float(c.prices.open) for c in candles[k:k + 21]])
             window = consecutive([round(p / float(PIP)) for p in prices], "MINUTE")
-            self.assertEqual(strategy.target(window, status), after, call)
-            status, checked = after, checked + 1
-        self.assertGreater(checked, 100)
-        self.assertGreater(len(broker.orders), 3)
+            if k < len(seen) - 1:
+                self.assertEqual(strategy.target(window, before), after, k)
+        prices, before = seen[-1]
+        window = consecutive([round(p / float(PIP)) for p in prices], "MINUTE")
+        self.assertNotIn(strategy.target(window, before), (before, None))  # The refused reversal.
+        self.assertEqual([side for _, _, side in broker.orders], [before])
+        self.assertGreater(len(seen), 3)
 
     def test_moving_average_loop_after_its_startup_wait(self):
         """Shared execution (issue #9): every decision matches the backtest rule until the

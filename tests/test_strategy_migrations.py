@@ -15,7 +15,7 @@ from unittest.mock import Mock, patch
 from test_execution_assumptions import LiveGateCase
 from trading_bot.execution.single_position import ExecutionHalted
 from trading_bot.risk import live_execution
-from trading_bot.strategies import moving_average, registry
+from trading_bot.strategies import moving_average, registry, sma
 from trading_bot.strategies.signals import price_average
 
 
@@ -62,7 +62,7 @@ def original_first_decision(windows):
 
 
 class CommonOptionTests(unittest.TestCase):
-    MIGRATED = ("moving_average",)
+    MIGRATED = ("moving_average", "sma")
 
     def test_shared_options_are_validated_before_authentication(self):
         for name in self.MIGRATED:
@@ -192,6 +192,43 @@ class MovingAverageMigrationTests(unittest.TestCase):
         self.assertEqual(strategy.trading_entry, "trading_bot.strategies.moving_average:main")
         self.assertEqual(strategy.trading_options, frozenset())
         self.assertIs(importlib.import_module("main"), moving_average)
+
+
+class SmaMigrationTests(unittest.TestCase):
+    def test_defaults_schedule_and_window_are_unchanged(self):
+        api = Mock()
+        api.getHistoricalPrices.return_value = ({"prices": [{"openPrice": {"ask": 1}}] * 21}, 200)
+        raised, factory, out = run_main(sma, ["--read-only", "--cycles", "1"], api, [None])
+        self.assertIsNone(raised)
+        api.getHistoricalPrices.assert_called_with("EURUSD", "MINUTE", 21)
+        self.assertEqual((sma.FAST_PERIOD, sma.SLOW_PERIOD), (9, 21))
+        for method in ("createPosition", "closePosition", "getAllPositionsList"):
+            getattr(api, method).assert_not_called()
+
+    def test_decision_is_the_backtest_rule_with_equal_values_holding(self):
+        rising = [float(i) for i in range(21)]
+        self.assertEqual(sma.target(rising, None), "BUY")
+        self.assertEqual(sma.target(rising[::-1], None), "SELL")
+        self.assertEqual(sma.target([1.0] * 21, None), "HOLD")
+        self.assertEqual(sma.target([1.0] * 21, "SELL"), "SELL")  # Held: no order.
+
+    def test_symbol_size_and_order_reach_the_broker_once_per_side(self):
+        api = Mock()
+        api.getHistoricalPrices.return_value = (
+            {"prices": [{"openPrice": {"ask": float(i)}} for i in range(21)]}, 200)
+        api.getAllPositionsList.return_value = []
+        api.createPosition.return_value = ({"dealReference": "r1"}, 200)
+        raised, factory, _ = run_main(sma, ["--symbol", "AUDUSD", "--size", "200", "--cycles", "1"],
+                                      api, [None])
+        self.assertIsNone(raised)
+        api.createPosition.assert_called_once_with("AUDUSD", "BUY", 200)
+        self.assertEqual(factory.call_args.kwargs, {"symbol": "AUDUSD", "size": 200})
+
+    def test_registry_and_legacy_entry_are_unchanged(self):
+        strategy = registry.get("sma")
+        self.assertEqual(strategy.trading_entry, "trading_bot.strategies.sma:main")
+        self.assertEqual(strategy.trading_options, frozenset())
+        self.assertIs(importlib.import_module("sma"), sma)
 
 
 if __name__ == "__main__":
