@@ -15,7 +15,8 @@ from unittest.mock import Mock, patch
 from test_execution_assumptions import LiveGateCase
 from trading_bot.execution.single_position import ExecutionHalted
 from trading_bot.risk import live_execution
-from trading_bot.strategies import moving_average, registry, sma
+from trading_bot.strategies import ema_hma, moving_average, registry, sma
+from trading_bot.api.models import TradingPosition
 from trading_bot.strategies.signals import price_average
 
 
@@ -62,7 +63,7 @@ def original_first_decision(windows):
 
 
 class CommonOptionTests(unittest.TestCase):
-    MIGRATED = ("moving_average", "sma")
+    MIGRATED = ("moving_average", "sma", "ema_hma")
 
     def test_shared_options_are_validated_before_authentication(self):
         for name in self.MIGRATED:
@@ -229,6 +230,86 @@ class SmaMigrationTests(unittest.TestCase):
         self.assertEqual(strategy.trading_entry, "trading_bot.strategies.sma:main")
         self.assertEqual(strategy.trading_options, frozenset())
         self.assertIs(importlib.import_module("sma"), sma)
+
+
+def gated_entry(case, module, argv, **patches):
+    """One DEMO-equivalent BUY decision run through the armed LIVE gate fixture."""
+    case.gate.arm()
+    case.api.prepare_trading_cycle = Mock(return_value=False)
+    raised, _, _ = run_main(module, ["--REAL", "--cycles", "1", *argv], case.api, [None], **patches)
+    return raised
+
+
+class AgreementStrategyTests(unittest.TestCase):
+    """ema-hma and multiple-hma: agreement opens or holds, disagreement is flat."""
+
+    def assert_owned_only(self, module, patches):
+        # Issue #9: a disagreement closes only the position this process opened.
+        api = Mock()
+        api.getAllPositionsList.return_value = [TradingPosition("EURUSD", "manual-1")]
+        raised, _, _ = run_main(module, ["--cycles", "2"], api, [None, None], **patches)
+        self.assertIsNone(raised)
+        api.closePosition.assert_not_called()
+        api.createPosition.assert_not_called()  # Agreement while it is open: entry blocked.
+
+    def assert_gated(self, module, patches):
+        case = LiveGateCase("setUp")
+        case.setUp()
+        try:
+            raised = gated_entry(case, module, [], **patches)
+            self.assertIsNone(raised)
+            self.assertEqual([c.args[0] for c in case.send.call_args_list], ["post"])
+            self.assertEqual(case.send.call_args.kwargs["json"]["stopDistance"], 0.001)
+            self.assertEqual(list(case.gate.owned), ["owned"])
+        finally:
+            case.doCleanups()
+
+
+class EmaHmaMigrationTests(AgreementStrategyTests):
+    AGREE = {"calculate_two_ema_result": Mock(return_value="BUY"),
+             "calculate_hma_result": Mock(return_value="BUY")}
+
+    def test_decision_is_the_backtest_agreement_rule(self):
+        self.assertEqual(ema_hma.target(("BUY", "BUY"), None), "BUY")
+        self.assertEqual(ema_hma.target(("SELL", "SELL"), "BUY"), "BUY")  # Held, as before.
+        self.assertEqual(ema_hma.target(("BUY", "SELL"), "BUY"), "FLAT")
+        self.assertEqual(ema_hma.target(("BUY", "SELL"), None), "FLAT")
+
+    def test_unsupported_timeframe_fails_before_authentication(self):
+        raised, factory, _ = run_main(ema_hma, ["--time_frame", "HOUR"], Mock(), [])
+        self.assertEqual(raised.code, 2)
+        factory.assert_not_called()
+
+    def test_read_only_reads_both_signal_windows_and_never_orders(self):
+        api = Mock()
+        api.getHistoricalPrices.return_value = ({"prices": [{}] * 200}, 200)
+        raised, _, _ = run_main(ema_hma, ["--read-only", "--cycles", "1"], api, [None])
+        self.assertIsNone(raised)
+        self.assertEqual([c.args for c in api.getHistoricalPrices.call_args_list],
+                         [("EURUSD", "MINUTE_5", 200), ("EURUSD", "MINUTE_5", 48)])
+        for method in ("createPosition", "closePosition", "getAllPositionsList"):
+            getattr(api, method).assert_not_called()
+
+    def test_signal_inputs_still_end_with_the_forming_candle(self):
+        api = Mock()
+        api.getHistoricalPricesList.return_value = [1.0] * 200
+        api.getAllPositionsList.return_value = []
+        api.createPosition.return_value = ({"dealReference": "r1"}, 200)
+        raised, _, _ = run_main(ema_hma, ["--cycles", "1"], api, [None])
+        self.assertIsNone(raised)
+        # getHistoricalPricesList (newest candles, forming one included), never the
+        # completed-candle selection with a boundary (issue #11).
+        self.assertEqual([c.args for c in api.getHistoricalPricesList.call_args_list],
+                         [("EURUSD", "MINUTE_5", 200), ("EURUSD", "MINUTE_5", 48)])
+        api.getHistoricalPrices.assert_not_called()
+
+    def test_disagreement_closes_only_owned_positions(self):
+        self.assert_owned_only(ema_hma, {"calculate_two_ema_result": Mock(return_value="BUY"),
+                                         "calculate_hma_result": Mock(return_value="SELL")})
+        self.assert_owned_only(ema_hma, self.AGREE)
+
+    def test_live_entry_goes_through_the_gate(self):
+        self.assert_gated(ema_hma, self.AGREE)
 
 
 if __name__ == "__main__":
