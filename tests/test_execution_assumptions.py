@@ -277,7 +277,7 @@ class ReportWarningTests(unittest.TestCase):
         self.assertEqual(lines[0], "========== BACKTEST REPORT ==========")
         self.assertTrue(lines[1].startswith("!!! ONLINE AND BACKTEST EXECUTION DIFFER"))
         self.assertLess(text.index("stop and reverse"), text.index("Strategy:"))
-        self.assertIn("live_open_order_limit_reached", text)
+        self.assertIn("reversal_requires_confirmed_close", text)
         self.assertEqual(report["online_differences"], list(adapters.ADAPTERS["sma"].online_differences))
         self.assertIn("Online and backtest execution differ", page)
         self.assertIn("stop and reverse", page)
