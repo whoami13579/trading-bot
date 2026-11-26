@@ -810,6 +810,7 @@ class CliTests(unittest.TestCase):
                 "    args = cli.build_parser().parse_args(['--strategy', key])\n"
                 "    runner.plan(cli.request_from_args(args), now=datetime(2026, 11, 17, tzinfo=timezone.utc))\n"
                 "bad = [m for m in sys.modules if m.startswith(('trading_bot.api', 'trading_bot.risk',"
+                " 'trading_bot.execution', 'trading_bot.utils.network_recovery',"
                 " 'trading_bot.config.trading_config', 'trading_bot.strategies.sma',"
                 " 'trading_bot.strategies.moving_average', 'trading_bot.strategies.ema_hma',"
                 " 'trading_bot.strategies.multiple_hma'))]\n"
